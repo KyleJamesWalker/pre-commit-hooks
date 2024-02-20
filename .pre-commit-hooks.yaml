@@ -3,6 +3,6 @@
     name: Check for TODOs
     description: Block commit with TODOs without a ticket number.
     entry: todo
-    language: python
+    language: script
     files: ''
     stages: [commit, push, manual]
