@@ -1,0 +1,8 @@
+---
+-   id: todo
+    name: Check for TODOs
+    description: Block commit with TODOs without a ticket number.
+    entry: todo
+    language: python
+    files: ''
+    stages: [commit, push, manual]
