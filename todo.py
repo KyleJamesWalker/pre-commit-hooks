@@ -33,14 +33,19 @@ def main():
         matcher = re.compile(args.search_pattern)
         for filename in args.filenames:
             with open(filename, "r") as file:
-                for line_num, line in enumerate(file, start=1):
-                    if matcher.match(line):
-                        matches.append((filename, line_num, line.lstrip().rstrip()))
+                try:
+                     for line_num, line in enumerate(file, start=1):
+                        if matcher.match(line):
+                            matches.append((filename, line_num, line.lstrip().rstrip()))
+                except UnicodeDecodeError:
+                    err(f"Warning: Error decoding {filename}")
+                    continue
+
         if matches:
-            err('Error: Search pattern found. Please remove or add tracking ticket.')
+            err("Error: Search pattern found. Please remove or add tracking ticket.")
             for match in matches:
                 err(f"  {match[0]}:{match[1]} - {match[2]}")
-            err('')
+            err("")
             return_val = 1
 
     return return_val
