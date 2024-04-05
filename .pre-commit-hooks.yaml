@@ -6,3 +6,13 @@
     language: script
     files: ''
     stages: [commit, push, manual]
+
+-   id: generated-sidecar
+    name: Check for Generated Sidecars
+    description: Block commit if sidecar files are not generated.
+    entry: sidecar.py
+    language: script
+    always_run: true
+    pass_filenames: false
+    files: ''
+    stages: [commit, push]
