@@ -34,7 +34,7 @@ def main():
         for filename in args.filenames:
             with open(filename, "r") as file:
                 try:
-                     for line_num, line in enumerate(file, start=1):
+                    for line_num, line in enumerate(file, start=1):
                         if matcher.match(line):
                             matches.append((filename, line_num, line.lstrip().rstrip()))
                 except UnicodeDecodeError:
