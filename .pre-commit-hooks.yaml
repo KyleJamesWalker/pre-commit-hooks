@@ -7,6 +7,14 @@
     files: ''
     stages: [commit, push, manual]
 
+-   id: regex
+    name: Search for disallowed text
+    description: Block commit when regex is found, like a TODO without a ticket number
+    entry: todo.py
+    language: script
+    files: ''
+    stages: [commit, push, manual]
+
 -   id: generated-sidecar
     name: Check for Generated Sidecars
     description: Block commit if sidecar files are not generated.
