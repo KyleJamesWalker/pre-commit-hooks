@@ -23,6 +23,10 @@ def main():
         default=r"^.*TODO:(?!\s*\[?[A-Z]{1,5}-\d+).*$",
     )
     parser.add_argument("--repo-skip-pattern", default=".*-template-.*")
+    parser.add_argument(
+        "--found-message",
+        default="Search pattern found. Please remove or add tracking ticket.",
+    )
     parser.add_argument("filenames", nargs="*")
     args = parser.parse_args()
 
@@ -42,7 +46,7 @@ def main():
                     continue
 
         if matches:
-            err("Error: Search pattern found. Please remove or add tracking ticket.")
+            err(f"Error: {args.found_message}")
             for match in matches:
                 err(f"  {match[0]}:{match[1]} - {match[2]}")
             err("")
