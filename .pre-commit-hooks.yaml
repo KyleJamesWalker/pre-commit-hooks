@@ -24,3 +24,13 @@
     pass_filenames: false
     files: ''
     stages: [pre-commit, pre-push]
+
+-   id: decorator-kwargs
+    name: Check for missing decorator kwargs
+    description: Block commit if missing required kwargs from configured decorators.
+    entry: decorator_kwargs.py
+    language: script
+    always_run: true
+    pass_filenames: false
+    files: ''
+    stages: [pre-commit, pre-push]

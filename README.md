@@ -27,6 +27,24 @@ Ensures that sidecar file are up to date.
     - `M` (months)
     - `y` (years)
 
+#### `check_decorator_kwargs`
+Ensures that Python decorators include required keyword arguments. This hook checks
+function decorators against a configuration to verify that all specified required
+keyword arguments are present.
+
+  - `--config <config>` - Decorator configuration. Can be provided as:
+    - JSON string: `'{"task.kubernetes": ["name"], "other.decorator": ["arg1", "arg2"]}'`
+    - JSON file path: Path to a JSON file with the same structure
+    - Simple format: `'task.kubernetes:name;other.decorator:arg1,arg2'`
+
+    If not provided, the hook checks the `DECORATOR_CHECK_CONFIG` environment variable.
+    If neither is provided, defaults to checking `task.kubernetes` for `name` argument.
+
+  Examples:
+    - JSON: `--config '{"task.kubernetes": ["name"]}'`
+    - Simple: `--config 'task.kubernetes:name;task.docker:image,name'`
+    - Environment variable: `DECORATOR_CHECK_CONFIG='{"task.kubernetes": ["name"]}'`
+
 # Development
 To develop and test the hooks, you can use the `pre-commit try-repo` command, from
 another repo using these hooks. For example:
