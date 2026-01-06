@@ -34,3 +34,13 @@
     pass_filenames: false
     files: ''
     stages: [pre-commit, pre-push]
+
+-   id: yaml-sync
+    name: Validate YAML files are synchronized
+    description: Block commit if YAML files are not synchronized according to rules.
+    entry: yaml_sync.py
+    language: script
+    always_run: true
+    pass_filenames: false
+    files: ''
+    stages: [pre-commit, pre-push]
