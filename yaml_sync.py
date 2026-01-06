@@ -38,7 +38,9 @@ All keys must match 100% between all files.
 
 import argparse
 import json
+import os
 import re
+import shlex
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -505,6 +507,10 @@ JSON config format:
         action="append",
         help="Comma-separated keys to skip validation (e.g., KEY1,KEY2). Can be specified multiple times.",
     )
+
+    # Allow pre-commit try-repo to pass in additional arguments
+    if os.environ.get("PRE_COMMIT_TRY_ARGS"):
+        sys.argv.extend(shlex.split(os.environ["PRE_COMMIT_TRY_ARGS"]))
 
     args = parser.parse_args()
 
