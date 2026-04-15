@@ -16,7 +16,7 @@ Ensures that TODO comments are removed, using the python re module to match line
 Ensures that sidecar file are up to date.
   - `--sidecar=<primary>:<sidecar>` - Fail if the commit for the `primary` file does not
     include the `sidecar` file.
-  - `--age=<sidecar>:<age>` - Fail if the `sidecar` file is older than the specified age.
+  - `--age=<file>:<age>[:<source>]` - Fail if the `file` is older than the specified age.
     The age is a string formatted with: `30d5h`.
     Note the following units are supported:
     - `s` (seconds)
@@ -26,6 +26,16 @@ Ensures that sidecar file are up to date.
     - `w` (weeks)
     - `M` (months)
     - `y` (years)
+
+    The optional `source` controls how file age is determined:
+    - `commit` (default) — uses `git log` to find the last commit time. This works
+      correctly on freshly cloned repos where filesystem timestamps are all recent.
+    - `mtime` — uses the filesystem modification time.
+
+    Examples:
+    - `--age=poetry.lock:30d` — fails if poetry.lock was last committed over 30 days ago
+    - `--age=poetry.lock:30d:commit` — same as above (explicit)
+    - `--age=poetry.lock:30d:mtime` — uses filesystem modification time instead
 
 #### `decorator-kwargs`
 Ensures that Python decorators include required keyword arguments. This hook checks
