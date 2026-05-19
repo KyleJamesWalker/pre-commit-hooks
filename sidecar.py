@@ -40,9 +40,9 @@ def get_commit_files() -> list:
     )
 
     if result.returncode == 0:
-        # Convert `M file-name.example\n...` to a list of file names with commit type
+        # git status -s format is XY<space>filename; strip both parts cleanly
         files = [
-            FileStatus(*x.strip().split(" ", 1))
+            FileStatus(x[:2].strip(), x[3:])
             for x in result.stdout.decode("utf-8").split("\n")
             if x.strip()
         ]
