@@ -135,7 +135,7 @@ def get_file_age(filename: str, source: str) -> datetime.timedelta | None:
         return now - datetime.datetime.fromtimestamp(os.path.getmtime(filename))
 
 
-def age_checks(age_rules: list) -> int:
+def age_checks(age_rules: list, commit_files: list) -> int:
     """Check if the sidecar files are updated based on the rules provided.
 
     Rule format: filename:age[:source]
@@ -157,6 +157,9 @@ def age_checks(age_rules: list) -> int:
         if source not in ("commit", "mtime"):
             err(f"Error: Invalid age source '{source}', expected 'commit' or 'mtime'.")
             result += 1
+            continue
+
+        if check_status(filename, "MA", commit_files):
             continue
 
         max_age = parse_time_string(age)
@@ -191,7 +194,7 @@ def main():
         return_val += sidecar_checks(commit_files, args.sidecar)
 
     if args.age:
-        return_val += age_checks(args.age)
+        return_val += age_checks(args.age, commit_files)
 
     return return_val
 
