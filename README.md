@@ -11,6 +11,10 @@ Ensures that TODO comments are removed, using the python re module to match line
     Default: `.*-template-.*`
   - `--found-message` - Allow custom message when search-pattern is found (allows
     generalization for basic regex).
+  - `--warn-only` - Report matches as warnings and exit 0 instead of failing. Also
+    scans repos matching `--repo-skip-pattern`, so a `Template` repo can surface the
+    TODOs that will start blocking once the hook enforces normally (pair with
+    pre-commit's `verbose: true` so the warnings show on a passing run).
 
 #### `generated-sidecar`
 Ensures that sidecar file are up to date.
