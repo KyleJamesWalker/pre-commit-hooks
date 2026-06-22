@@ -27,10 +27,22 @@ def main():
         "--found-message",
         default="Search pattern found. Please remove or add tracking ticket.",
     )
+    parser.add_argument(
+        "--warn-only",
+        action="store_true",
+        help=(
+            "Report matches as warnings and exit 0 instead of failing. Also scans "
+            "repos that match --repo-skip-pattern, so template repos can surface the "
+            "TODOs that will start blocking once the hook enforces normally."
+        ),
+    )
     parser.add_argument("filenames", nargs="*")
     args = parser.parse_args()
 
-    if re.search(args.repo_skip_pattern, os.getcwd().split(os.sep)[-1]):
+    skip_repo = re.search(args.repo_skip_pattern, os.getcwd().split(os.sep)[-1])
+    # Normally a skip-pattern (template) repo does nothing. --warn-only overrides
+    # that so matches are still surfaced for visibility, just never block.
+    if skip_repo and not args.warn_only:
         # Skip the hook when requested for template repos.
         pass
     else:
@@ -46,11 +58,11 @@ def main():
                     continue
 
         if matches:
-            err(f"Error: {args.found_message}")
+            err(f"{'Warning' if args.warn_only else 'Error'}: {args.found_message}")
             for match in matches:
                 err(f"  {match[0]}:{match[1]} - {match[2]}")
             err("")
-            return_val = 1
+            return_val = 0 if args.warn_only else 1
 
     return return_val
 
