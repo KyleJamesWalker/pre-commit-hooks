@@ -44,3 +44,21 @@
     pass_filenames: false
     files: ''
     stages: [pre-commit, pre-push]
+
+-   id: prose-lint
+    name: Lint prose in documentation
+    description: Block commit when documentation prose is over the style budget.
+    entry: prose_lint.py --profile docs
+    language: script
+    types: [text]
+    files: '\.(md|markdown|mdx|rst|txt|adoc|org)$'
+    stages: [pre-commit, pre-push, manual]
+
+-   id: prose-lint-comments
+    name: Lint prose in code comments
+    description: Block commit when comments or docstrings contain slop.
+    entry: prose_lint.py --profile comments
+    language: script
+    types: [text]
+    files: '\.(py|pyi|js|jsx|mjs|cjs|ts|tsx|go|rs|java|kt|kts|scala|c|h|cpp|cc|hpp|cs|rb|sh|bash|zsh|php|swift|dart|lua|sql|tf|tfvars|proto|groovy|gradle|css|scss|less|erl|ex|exs|ps1|vue|html|xml)$'
+    stages: [pre-commit, pre-push, manual]
