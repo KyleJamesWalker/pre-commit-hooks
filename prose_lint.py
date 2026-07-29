@@ -375,12 +375,38 @@ BY_NAME = {
 
 
 class Segment(object):
-    """One run of prose with the source line its first character sits on."""
+    """One run of prose, rejoined from however many source lines it was wrapped
+    across, with the map back to those lines.
 
-    def __init__(self, line, text, kind="prose"):
+    `parts` holds every source line the text was joined from, so a finding's
+    character offset resolves to the line that actually contains it. Without the
+    map every finding in a paragraph reports the paragraph's first line, which
+    for a hook whose entire output is `file:line` reads as a broken tool.
+
+    `text` must stay equal to " ".join(part for _, part in parts), because the
+    offsets in `line_of` are offsets into `text`. Use `extend` rather than
+    appending to `text` directly.
+    """
+
+    def __init__(self, line, text, kind="prose", parts=None):
         self.line = line
         self.text = text
         self.kind = kind
+        self.parts = list(parts) if parts else [(line, text)]
+
+    def extend(self, line, text):
+        """Append a wrapped continuation line, keeping the offset map intact."""
+        self.text += " " + text
+        self.parts.append((line, text))
+
+    def line_of(self, offset):
+        """Map a character offset in `text` back to its source line."""
+        pos = 0
+        for line, part in self.parts:
+            if offset <= pos + len(part):
+                return line
+            pos += len(part) + 1
+        return self.line
 
 
 def _skip_string(text, i, line, quote):
@@ -745,9 +771,9 @@ def extract_document(text):
         elif raw.lstrip().startswith(">"):
             block.append(Segment(i, masked.lstrip().lstrip(">").strip(), "quote"))
         elif block and block[-1].kind in ("list", "quote"):
-            block[-1].text += " " + masked.strip()
+            block[-1].extend(i, masked.strip())
         elif block and block[-1].kind == "prose":
-            block[-1].text += " " + masked.strip()
+            block[-1].extend(i, masked.strip())
         else:
             block.append(Segment(i, masked.strip(), "prose"))
 
@@ -774,14 +800,16 @@ def extract_comment_blocks(text, syntax):
                      for line, part in parts]
         else:
             parts = [(line, part.strip()) for line, part in parts]
-        parts = [(line, strip_directive(part)) for line, part in parts
-                 if line not in ignored]
+        # Masking runs per line here, as it already does on the document path, so
+        # that a finding's offset still resolves through Segment.line_of.
+        parts = [(line, mask_inline(strip_directive(part)).strip())
+                 for line, part in parts if line not in ignored]
         parts = [(line, part) for line, part in parts if part]
         if not parts:
             continue
-        joined = mask_inline(" ".join(part for _, part in parts)).strip()
-        if joined:
-            units.append(Segment(parts[0][0], joined, "comment"))
+        joined = " ".join(part for _, part in parts)
+        if joined.strip():
+            units.append(Segment(parts[0][0], joined, "comment", parts))
     return [[unit] for unit in units]
 
 # --------------------------------------------------------------------------- #
@@ -824,14 +852,18 @@ def excerpt(text, width=68):
 
 
 def find_phrases(text, phrases):
-    """Return (phrase, suggestion) for each occurrence, case-insensitively."""
+    """Return (phrase, suggestion, offset) per occurrence, case-insensitively.
+
+    The offset is what lets a finding name the line holding the phrase rather
+    than the first line of the paragraph it was joined into.
+    """
     hits = []
     low = text.lower()
     items = phrases.items() if isinstance(phrases, dict) else [(p, None) for p in phrases]
     for phrase, suggestion in items:
         pattern = r"(?<![a-z])" + re.escape(phrase.lower()) + r"(?![a-z])"
-        for _ in re.finditer(pattern, low):
-            hits.append((phrase, suggestion))
+        for match in re.finditer(pattern, low):
+            hits.append((phrase, suggestion, match.start()))
     return hits
 
 
@@ -850,74 +882,83 @@ def run_checks(blocks, cfg):
     banned = cfg["banned"]
     marketing = cfg["marketing"]
 
-    def add(line, check, detail, text=""):
+    def add(unit, offset, check, detail, text=""):
+        # The offset is resolved against the unit rather than stored, so a
+        # finding names the source line holding the text it quotes.
         if check in enabled:
-            out.append(Finding(line, check, detail, excerpt(text)))
+            out.append(Finding(unit.line_of(offset), check, detail, excerpt(text)))
 
     for block in blocks:
         sentence_total = 0
         for unit in block:
             text = unit.text
-            line = unit.line
 
             # Sentence length: skip headings and table cells, which are fragments.
             if unit.kind not in ("heading", "table"):
+                cursor = 0
                 for sentence in sentences(text):
                     sentence_total += 1
+                    found = text.find(sentence, cursor)
+                    if found >= 0:
+                        cursor = found + len(sentence)
                     length = word_count(sentence)
                     if length > cfg["max_sentence_words"]:
-                        add(line, "long_sentence",
+                        add(unit, found if found >= 0 else 0, "long_sentence",
                             "%d words (max %d)" % (length, cfg["max_sentence_words"]),
                             sentence)
 
-            for _ in re.finditer(r";", text):
-                add(line, "semicolon", "semicolon", text)
+            for match in re.finditer(r";", text):
+                add(unit, match.start(), "semicolon", "semicolon", text)
 
             for match in re.finditer(r"\b\w+['’](?:t|re|ve|ll|d|s|m)\b", text):
                 word = match.group(0)
                 norm = word.lower().replace("’", "'")
                 if norm.endswith("'s") and norm not in S_CONTRACTIONS:
                     continue                    # possessive, not a contraction
-                add(line, "contraction", word, text)
+                add(unit, match.start(), "contraction", word, text)
 
             for match in re.finditer(r"\b(%s)\s+(\w+ed|%s)\b" % (BE, PP_IRREG), text, re.I):
                 if match.group(2).lower() in PASSIVE_OK:
                     continue
-                add(line, "passive_voice", match.group(0), text)
+                add(unit, match.start(), "passive_voice", match.group(0), text)
 
             for match in re.finditer(r"\b%s\s+(\w+ing)\b" % BE, text, re.I):
                 if match.group(1).lower() in ING_NOUN:
                     continue                            # a noun, not a verb
-                add(line, "ing_main_verb", match.group(0), text)
+                add(unit, match.start(), "ing_main_verb", match.group(0), text)
 
             for match in NOMINALIZATION.finditer(text):
-                add(line, "nominalization", match.group(0), text)
+                add(unit, match.start(), "nominalization", match.group(0), text)
             for match in NOMINAL_OF.finditer(text):
-                add(line, "nominalization", "%s of" % match.group(1), text)
+                add(unit, match.start(), "nominalization",
+                    "%s of" % match.group(1), text)
 
-            for phrase, suggestion in find_phrases(text, PHRASAL):
-                add(line, "phrasal_verb", '"%s" -> %s' % (phrase, suggestion), text)
+            for phrase, suggestion, at in find_phrases(text, PHRASAL):
+                add(unit, at, "phrasal_verb",
+                    '"%s" -> %s' % (phrase, suggestion), text)
 
-            for phrase, suggestion in find_phrases(text, banned):
+            for phrase, suggestion, at in find_phrases(text, banned):
                 fix = "-> %s" % suggestion if suggestion else "-> delete"
-                add(line, "banned_word", '"%s" %s' % (phrase, fix), text)
+                add(unit, at, "banned_word", '"%s" %s' % (phrase, fix), text)
 
-            for phrase, _ in find_phrases(text, marketing):
-                add(line, "marketing_adjective", '"%s"' % phrase, text)
+            for phrase, _, at in find_phrases(text, marketing):
+                add(unit, at, "marketing_adjective", '"%s"' % phrase, text)
 
-            for phrase, _ in find_phrases(text, HEDGE):
-                add(line, "hedge", '"%s"' % phrase, text)
+            for phrase, _, at in find_phrases(text, HEDGE):
+                add(unit, at, "hedge", '"%s"' % phrase, text)
 
-            for phrase, _ in find_phrases(text, INTENSIFIER):
-                add(line, "intensifier", '"%s"' % phrase, text)
+            for phrase, _, at in find_phrases(text, INTENSIFIER):
+                add(unit, at, "intensifier", '"%s"' % phrase, text)
 
-            for phrase, _ in find_phrases(text, CLOSER):
-                add(line, "empty_closer", '"%s"' % phrase, text)
+            for phrase, _, at in find_phrases(text, CLOSER):
+                add(unit, at, "empty_closer", '"%s"' % phrase, text)
 
         cap = cfg["max_paragraph_sentences"]
         if cap and sentence_total > cap and not any(
                 u.kind in ("list", "heading", "table") for u in block):
-            add(block[0].line, "long_paragraph",
+            # A paragraph rule is a fact about the whole block, so it belongs on
+            # the block's first line rather than on any one offset inside it.
+            add(block[0], 0, "long_paragraph",
                 "%d sentences (max %d)" % (sentence_total, cap), block[0].text)
 
     out.sort(key=lambda f: (f.line, f.check))
