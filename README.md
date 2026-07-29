@@ -336,6 +336,18 @@ Examples:
     ```
 
 # Development
+
+`prose_lint.py` has a test suite. Run it from the repository root with the
+standard library alone:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+`tests/test_prose_lint.py` pins current behaviour, including a golden document
+checked check by check. A rule change is expected to move those numbers: update
+them in the same commit, so the diff shows what the change did to the score.
+
 To develop and test the hooks, you can use the `pre-commit try-repo` command, from
 another repo using these hooks. For example:
 
