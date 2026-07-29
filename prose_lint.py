@@ -814,6 +814,21 @@ def run_checks(blocks, cfg):
 # --------------------------------------------------------------------------- #
 
 
+def _number(cast, value, what):
+    """Cast a configured number, reporting a bad one as a configuration error.
+
+    Without this the cast raised ValueError straight out of build_config, which
+    main() does not catch, so a typo exited 1 with a traceback. Exit 1 is the
+    documented code for prose over budget, so a misconfigured hook read as
+    failing prose.
+    """
+    try:
+        return cast(value)
+    except (TypeError, ValueError):
+        expected = "an integer" if cast is int else "a number"
+        raise ConfigError("%s expects %s, got %r" % (what, expected, value))
+
+
 def build_config(args):
     """Merge profile defaults, JSON config and CLI overrides, in that order."""
     raw = {}
@@ -864,9 +879,11 @@ def build_config(args):
         elif spec.get("enabled") is False:
             cfg["enabled"].discard(name)
         if "weight" in spec:
-            cfg["weights"][name] = float(spec["weight"])
+            cfg["weights"][name] = _number(
+                float, spec["weight"], "weight for check %r" % name)
         if "max" in spec:
-            cfg["max"][name] = None if spec["max"] is None else int(spec["max"])
+            cfg["max"][name] = (None if spec["max"] is None else
+                                _number(int, spec["max"], "max for check %r" % name))
 
     # CLI overrides win over the JSON config.
     if args.threshold is not None:
@@ -892,12 +909,12 @@ def build_config(args):
         name, _, value = item.partition("=")
         if name not in ALL_CHECKS or not value:
             raise ConfigError("--weight expects CHECK=NUMBER, got %r" % item)
-        cfg["weights"][name] = float(value)
+        cfg["weights"][name] = _number(float, value, "--weight %s" % name)
     for item in args.max or []:
         name, _, value = item.partition("=")
         if name not in ALL_CHECKS or not value:
             raise ConfigError("--max expects CHECK=INTEGER, got %r" % item)
-        cfg["max"][name] = int(value)
+        cfg["max"][name] = _number(int, value, "--max %s" % name)
 
     # Project vocabulary.
     banned = dict(BANNED)
