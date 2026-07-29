@@ -529,12 +529,69 @@ def extract_python(text):
 
 
 BLOCK_ORNAMENT = re.compile(r"^\s*[*!/#=\-]+\s?")
-DIRECTIVE = re.compile(
-    r"^\s*(?:@\w+|:\w+:|\w+:\/\/|(?:type|param|returns?|raises?|yields?|arg|args|"
-    r"attribute|attributes|note|todo|fixme|noqa|pylint|eslint|prettier|ruff|mypy|"
-    r"pragma|see|since|deprecated|example|examples|usage)\b[\s:])",
+
+# Tool configuration rather than prose, so the whole line goes.
+SUPPRESS = re.compile(
+    r"^\s*(?:noqa|pylint|eslint|prettier|prettier-ignore|ruff|mypy|pyright|flake8"
+    r"|black|isort|fmt|type|pragma|coverage|ts-ignore|ts-expect-error"
+    r"|codegen|checkstyle|shellcheck|nolint|golangci)\b[\s:]",
     re.I,
 )
+
+# A documentation tag is a label on prose, so the tag goes and the description
+# stays. Dropping the whole line discarded 11.7% of all comment words measured
+# across 17 repos, 38% in one, and let a JSDoc block of pure marketing score 0.00.
+DOC_TAG = re.compile(
+    r"^\s*(?:@\w+|:\w+:|(?:param|returns?|raises?|yields?|arg|args|attribute"
+    r"|attributes|note|notes|see|since|deprecated|example|examples|usage|todo"
+    r"|fixme|warning|important)\b\s*:?)\s*",
+    re.I,
+)
+
+# A line holding nothing but an address carries no prose.
+URL_ONLY = re.compile(r"^\s*<?\w+://\S+>?\s*$")
+
+# "@param name - description": the name is an identifier, so it is not prose.
+TAG_OPERAND = re.compile(r"^[\w.\[\]*{}|<>]+\s*(?:-{1,2}|:)\s+")
+
+# A word that belongs to prose rather than to a command line: letters only, not
+# glued to a path separator, dot, digit or flag dash.
+PROSE_WORD = re.compile(r"(?<![\w/\\.-])[A-Za-z]{2,}(?![\w/\\.=-])")
+
+# A shell prompt or a leading path opens a command, not a sentence.
+SYNTAX_LEAD = re.compile(r"^(?:[$>#%]\s|\.{0,2}/|~/)")
+COMMAND_FLAG = re.compile(r"(?:^|\s)-{1,2}[A-Za-z]")
+
+
+def _is_prose(text):
+    """True when a tagged remainder reads as prose, not as command syntax.
+
+    `Usage:` and `@example` are usually followed by a command line, and the skill
+    puts command syntax out of scope. Counting it as prose pads the word count
+    that every rate divides by: one real `ensure` finding in a 45-word shell
+    script scored 2.22 and failed, and adding nine words of `./script.sh <ID>`
+    diluted it to 1.85 and passed.
+    """
+    if SYNTAX_LEAD.match(text):
+        return False
+    words = PROSE_WORD.findall(text)
+    # A short tail carrying a flag is an invocation. A longer one is prose that
+    # happens to name a flag, which is worth checking, so the length guard keeps
+    # "run with --verbose to see more output" in scope.
+    if len(words) < 5 and COMMAND_FLAG.search(text):
+        return False
+    return len(words) >= 2
+
+
+def strip_directive(text):
+    """Return the prose in one comment line, or "" when the line holds none."""
+    if SUPPRESS.match(text) or URL_ONLY.match(text):
+        return ""
+    tag = DOC_TAG.match(text)
+    if not tag:
+        return text.strip()
+    rest = TAG_OPERAND.sub("", text[tag.end():]).strip()
+    return rest if _is_prose(rest) else ""
 
 
 def group_line_comments(segments):
@@ -717,8 +774,9 @@ def extract_comment_blocks(text, syntax):
                      for line, part in parts]
         else:
             parts = [(line, part.strip()) for line, part in parts]
-        parts = [(line, part) for line, part in parts
-                 if part and line not in ignored and not DIRECTIVE.match(part)]
+        parts = [(line, strip_directive(part)) for line, part in parts
+                 if line not in ignored]
+        parts = [(line, part) for line, part in parts if part]
         if not parts:
             continue
         joined = mask_inline(" ".join(part for _, part in parts)).strip()
