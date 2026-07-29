@@ -44,3 +44,45 @@
     pass_filenames: false
     files: ''
     stages: [pre-commit, pre-push]
+
+-   id: prose-lint
+    name: Lint prose in documentation
+    description: Block commit when documentation prose is over the style budget.
+    entry: prose_lint.py --profile docs
+    language: script
+    types: [text]
+    files: '\.(md|markdown|mdx|rst|txt|adoc|org)$'
+    stages: [pre-commit, pre-push, manual]
+
+-   id: prose-lint-comments
+    name: Lint prose in code comments
+    description: Block commit when comments or docstrings contain slop.
+    entry: prose_lint.py --profile comments
+    language: script
+    types: [text]
+    files: '\.(py|pyi|js|jsx|mjs|cjs|ts|tsx|go|rs|java|kt|kts|scala|c|h|cpp|cc|hpp|cs|rb|sh|bash|zsh|php|swift|dart|lua|sql|tf|tfvars|proto|groovy|gradle|css|scss|less|erl|ex|exs|ps1|vue|html|xml)$'
+    stages: [pre-commit, pre-push, manual]
+
+# Warn-only variants. Same checks, reported without blocking the commit, for a
+# repository adopting the hook on documentation it did not write. `verbose: true`
+# is required: pre-commit hides the output of a passing hook, and these always
+# pass, so without it the warnings are never shown.
+-   id: prose-lint-warn
+    name: Lint prose in documentation (warn only)
+    description: Report documentation prose over the style budget without failing.
+    entry: prose_lint.py --profile docs --warn-only
+    language: script
+    types: [text]
+    files: '\.(md|markdown|mdx|rst|txt|adoc|org)$'
+    stages: [pre-commit, pre-push, manual]
+    verbose: true
+
+-   id: prose-lint-comments-warn
+    name: Lint prose in code comments (warn only)
+    description: Report slop in comments or docstrings without failing.
+    entry: prose_lint.py --profile comments --warn-only
+    language: script
+    types: [text]
+    files: '\.(py|pyi|js|jsx|mjs|cjs|ts|tsx|go|rs|java|kt|kts|scala|c|h|cpp|cc|hpp|cs|rb|sh|bash|zsh|php|swift|dart|lua|sql|tf|tfvars|proto|groovy|gradle|css|scss|less|erl|ex|exs|ps1|vue|html|xml)$'
+    stages: [pre-commit, pre-push, manual]
+    verbose: true
