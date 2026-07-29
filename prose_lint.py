@@ -10,9 +10,11 @@ English: word choice, sentence length, voice, hedging, marketing language and
 paragraph size. Judgment rules (is the noun the right noun, is the claim true)
 need a human and are not checked here.
 
-Two independent enforcement mechanisms, both configurable per check:
-  threshold - weighted violations per 100 words, for prose of any length
-  max       - absolute count cap, for zero-tolerance checks
+Three independent enforcement mechanisms:
+  threshold       - weighted violations per 100 words, at or above min_words
+  short_allowance - absolute violation count below min_words, where a rate says
+                    more about length than about quality
+  max             - absolute count cap per check, for zero-tolerance checks
 
 Every check can be enabled, disabled or re-weighted, so a project can tune the
 rule set without editing this file. Configuration comes from a profile, then a
@@ -43,6 +45,7 @@ BANNED = {
     "ensure": "make sure", "ensures": "makes sure", "ensuring": "making sure",
     "commence": "start", "commences": "starts", "commenced": "started",
     "initiate": "start", "initiates": "starts", "initiated": "started",
+    "begin": "start", "begins": "starts", "began": "started",
     "terminate": "stop", "terminates": "stops", "terminated": "stopped",
     "obtain": "get", "obtains": "gets", "obtained": "got",
     "acquire": "get", "acquires": "gets", "acquired": "got",
@@ -79,7 +82,7 @@ MARKETING = [
     "effortlessly", "world-class", "next-generation", "revolutionary", "blazing",
     "lightning-fast", "elegant", "delightful", "turnkey", "best-in-class",
     "state-of-the-art", "game-changing", "first-class", "battle-tested",
-    "enterprise-grade", "supercharge", "unleash", "empower", "empowers",
+    "enterprise-grade", "supercharge", "unlock", "unleash", "empower", "empowers",
     "rich set of", "sensible defaults", "minimal friction", "out of the box",
 ]
 
@@ -92,12 +95,13 @@ PHRASAL = {
     "roll out": "deploy", "rolls out": "deploys", "rolled out": "deployed",
     "tear down": "remove", "ramp up": "increase",
     "circle back": "revisit", "drill down": "examine",
+    "stand up": "create", "stood up": "created",
 }
 
 HEDGE = [
     "it is important to note", "it should be noted", "it is worth noting",
-    "please note that", "as mentioned above", "as noted above", "as we all know",
-    "needless to say", "it goes without saying", "generally speaking",
+    "please note that", "as mentioned", "as noted above", "as we all know",
+    "needless to say", "it goes without saying", "arguably", "generally speaking",
 ]
 
 INTENSIFIER = [
@@ -106,19 +110,40 @@ INTENSIFIER = [
 ]
 
 CLOSER = [
-    "in summary", "in conclusion", "to summarize", "all in all",
-    "at the end of the day", "provides a foundation", "sets the stage",
-    "paves the way", "going forward", "the possibilities are endless",
+    "in summary", "in conclusion", "to summarize", "overall,", "all in all",
+    "at the end of the day", "provides a foundation", "provides a solid foundation",
+    "sets the stage", "paves the way", "going forward", "in today's",
+    "the possibilities are endless",
 ]
 
 # Participles that read as adjectives, not as a passive with a hidden actor.
+# Kept identical to the skill's list on purpose. "is deprecated", "is documented"
+# and "is supported" were exempt here and are not exempt in the skill: each has a
+# hidden actor worth naming, so the skill's stricter reading wins.
 PASSIVE_OK = {
     "based", "related", "unrelated", "required", "intended", "supposed",
     "limited", "interested", "aware", "expected", "involved", "located",
-    "deprecated", "documented", "supported", "named", "called",
 }
 
 BE = r"(?:am|is|are|was|were|be|been|being)"
+
+# Nouns and prepositions that end in -ing. "The result is something" is not a
+# progressive verb, so the ing_main_verb check has to skip these.
+ING_NOUN = {
+    "anything", "something", "nothing", "everything", "thing", "things",
+    "during", "morning", "evening", "spring", "string", "strings", "king",
+    "ring", "ceiling", "sibling", "siblings", "offering", "offerings",
+    "warning", "warnings", "meaning", "engineering", "onboarding", "tooling",
+    "logging", "monitoring", "backing", "wiring", "casing", "sampling",
+}
+
+# Contractions of "to be" or "to have" that end in 's. The possessive check has
+# to let these through, otherwise the most common contraction of all is invisible.
+S_CONTRACTIONS = {
+    "it's", "that's", "there's", "let's", "what's", "here's", "he's", "she's",
+    "who's", "where's", "how's", "one's", "everything's", "nothing's",
+}
+
 PP_IRREG = (
     r"(?:done|made|sent|read|built|kept|held|set|put|run|written|shown|given"
     r"|taken|found|got|gotten|seen|known|thrown|drawn|left|lost|meant|sold)"
@@ -156,31 +181,76 @@ ALL_CHECKS = [
     "banned_word", "marketing_adjective", "hedge", "intensifier", "empty_closer",
 ]
 
-DEFAULT_WEIGHTS = {
-    "long_sentence": 1.0,
-    "long_paragraph": 1.0,
-    "semicolon": 1.0,
-    "contraction": 0.5,
-    "passive_voice": 1.0,
-    "ing_main_verb": 0.5,
-    "nominalization": 1.0,
-    "phrasal_verb": 0.5,
-    "banned_word": 1.0,
-    "marketing_adjective": 1.5,
-    "hedge": 1.5,
-    "intensifier": 0.5,
-    "empty_closer": 1.5,
-}
+# Every check weighs 1.0, so the score is a plain violation count per 100 words
+# and matches the technical-writing skill's linter on the same text. Two tools
+# reporting different numbers for one document is its own problem: a reviewer
+# cannot tell whether prose improved or the scorer changed its mind.
+#
+# The weighting machinery stays, because --weight and the JSON config are how a
+# project tunes this without editing the file. Only the defaults are uniform. Set
+# a weight below 1.0 to make a check advisory, above 1.0 to make one count double.
+DEFAULT_WEIGHTS = dict((name, 1.0) for name in ALL_CHECKS)
 
 # Checks that are almost always right, even on a terse code comment.
 HIGH_SIGNAL = ["banned_word", "marketing_adjective", "hedge", "empty_closer"]
 
+# Everything except intensifiers. The skill checks intensifiers in strict mode
+# only, because "significantly" and "highly" carry real meaning in a design doc
+# and the relaxed word list is what lets standard prose keep its range.
+DOC_CHECKS = [name for name in ALL_CHECKS if name != "intensifier"]
+
+# --------------------------------------------------------------------------- #
+# Why `short_allowance` exists, and why it is 1
+#
+# The document profiles mirror the technical-writing skill's linter, which is the
+# source of truth for these numbers: a 100-word floor, allowance 1 at the standard
+# threshold and 0 in strict mode, and a count rather than a rate below the floor.
+#
+# The rate is violations / words * 100 against a threshold of 2.0, so prose gets
+# 50 words of runway per allowed violation. Below roughly 100 words that rate is a
+# near-binary the threshold slices through arbitrarily. Measured on a 43-file,
+# 17k-word corpus, with the rate alone:
+#
+#     words  violations  score  verdict
+#        36           1   2.78  FAIL
+#        45           1   2.22  FAIL
+#        52           1   1.92  PASS
+#        50           2   4.00  FAIL
+#
+# Identical defect counts, opposite verdicts, seven words apart. Of 13 documents
+# under 100 words, 10 carried zero violations, so short prose can reach zero and
+# the rate was not doing useful work at that length.
+#
+# The rate also does not compare across lengths. A score of 2.78 is one defect in
+# 36 words and about 55 defects in 2000. Ranking by score put a 50-word index page
+# at 4.00 above a 1937-word architecture document at 3.56, so the metric
+# misdirected an audit rather than guiding it.
+#
+# Allowance of 1 was chosen over the alternatives. Zero is stricter than the old
+# behavior, flips the 52-word file from pass to fail, and lets a single "don't"
+# gate a commit. Two means nothing under 100 words could realistically fail, so
+# the check stops catching anything. One removes the cliff, still fails prose with
+# two real defects, and states in one sentence with no arithmetic: short prose may
+# carry at most one violation. The `strict` profile takes 0 deliberately, because
+# error messages and commit bodies are short by nature and have no budget
+# argument.
+#
+# REJECTED, deliberately: a denominator floor, per_100w = violations * 100 /
+# max(words, 100). It is one line and yields similar verdicts, but it reports a
+# rate that was never measured -- a reader seeing 1.0 on a 23-word document would
+# infer 0.23 violations. The rule here changes the verdict and keeps the reported
+# number true, which is why short prose prints a count and no rate at all.
+# Collapsing `is_short` and `short_allowance` back into a denominator fudge is a
+# regression, not a simplification.
+# --------------------------------------------------------------------------- #
+
 PROFILES = {
     # Whole-file documentation. Every check, rate-based enforcement.
     "docs": {
-        "enabled": list(ALL_CHECKS),
+        "enabled": list(DOC_CHECKS),
         "threshold": 2.0,
-        "min_words": 50,
+        "min_words": 100,
+        "short_allowance": 1,
         "max_sentence_words": 25,
         "max_paragraph_sentences": 6,
         "max": {},
@@ -189,7 +259,8 @@ PROFILES = {
     "strict": {
         "enabled": list(ALL_CHECKS),
         "threshold": 0.5,
-        "min_words": 30,
+        "min_words": 100,
+        "short_allowance": 0,
         "max_sentence_words": 20,
         "max_paragraph_sentences": 6,
         "max": {"hedge": 0, "marketing_adjective": 0},
@@ -203,10 +274,22 @@ PROFILES = {
     # slop ("utilize") to words that read as ordinary English in a docstring
     # ("ensure"). An absolute cap there fails normal code on its first commit,
     # which is how a hook gets switched off.
+    #
+    # This profile deliberately does not follow the skill. The skill governs whole
+    # documents, and its 100-word floor is calibrated for one. Comment prose is a
+    # different unit: a 40-word floor keeps the rate meaningful for a file with a
+    # handful of docstrings, where a 100-word floor would switch the rate off for
+    # most files and leave only the caps.
+    #
+    # `short_allowance` is null here on purpose. A count rule on a short comment
+    # would put banned_word back under an absolute cap by the back door, which is
+    # the outcome the rate-based split above exists to avoid. The zero caps
+    # already give the high-signal checks zero tolerance at any length.
     "comments": {
         "enabled": list(HIGH_SIGNAL),
         "threshold": 2.0,
         "min_words": 40,
+        "short_allowance": None,
         "max_sentence_words": 30,
         "max_paragraph_sentences": 0,
         "max": {"marketing_adjective": 0, "hedge": 0, "empty_closer": 0},
@@ -449,6 +532,8 @@ IGNORE_END = re.compile(r"(?:<!--|#|//)\s*prose-lint:\s*ignore-end\s*(?:-->)?")
 def mask_inline(text):
     """Remove spans that are code or addresses, not prose."""
     text = re.sub(r"``[^`]*``|`[^`]*`", " CODE ", text)
+    text = re.sub(r"&(?:[a-zA-Z][a-zA-Z0-9]{1,9}|#\d{1,5}|#x[0-9a-fA-F]{1,5});",
+                  " ", text)                            # &nbsp; is not a semicolon
     text = re.sub(r"!\[[^\]]*\]\([^)]*\)", " IMAGE ", text)
     text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
     text = re.sub(r"\[\[[^\]|]*\|([^\]]*)\]\]", r"\1", text)
@@ -589,7 +674,20 @@ def extract_comment_blocks(text, syntax):
 # Checks
 # --------------------------------------------------------------------------- #
 
-SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])")
+# Do not split after an abbreviation. Each lookbehind must be fixed width, so
+# they are listed separately rather than as one alternation. The lone-capital
+# rule needs the leading space: without it, a sentence ending in an acronym
+# ("... aligned with MRC.") would never split.
+_NOT_ABBREV = (
+    r"(?<![Ee]\.[Gg]\.)(?<![Ii]\.[Ee]\.)(?<!\bvs\.)(?<!\betc\.)(?<!\bcf\.)"
+    r"(?<!\bal\.)(?<!\bInc\.)(?<!\bLtd\.)(?<!\bNo\.)(?<!\bFig\.)"
+    r"(?<!\bapprox\.)(?<!\bDr\.)(?<!\bMr\.)(?<!\bMs\.)(?<!\s[A-Z]\.)"
+)
+# A sentence may open with markdown emphasis or a link bracket. Without these in
+# the lookahead, "Foo. **Bar** does X." reads as one sentence and its length is
+# reported as the sum of both.
+_SENT_LEAD = r"""[*_`\[]*[A-Z0-9"'(]"""
+SENT_SPLIT = re.compile(r"(?<=[.!?])" + _NOT_ABBREV + r"\s+(?=" + _SENT_LEAD + r")")
 WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9'\-/]*")
 
 
@@ -658,8 +756,9 @@ def run_checks(blocks, cfg):
 
             for match in re.finditer(r"\b\w+['’](?:t|re|ve|ll|d|s|m)\b", text):
                 word = match.group(0)
-                if word.lower().endswith(("'s", "’s")):
-                    continue
+                norm = word.lower().replace("’", "'")
+                if norm.endswith("'s") and norm not in S_CONTRACTIONS:
+                    continue                    # possessive, not a contraction
                 add(line, "contraction", word, text)
 
             for match in re.finditer(r"\b(%s)\s+(\w+ed|%s)\b" % (BE, PP_IRREG), text, re.I):
@@ -668,6 +767,8 @@ def run_checks(blocks, cfg):
                 add(line, "passive_voice", match.group(0), text)
 
             for match in re.finditer(r"\b%s\s+(\w+ing)\b" % BE, text, re.I):
+                if match.group(1).lower() in ING_NOUN:
+                    continue                            # a noun, not a verb
                 add(line, "ing_main_verb", match.group(0), text)
 
             for match in NOMINALIZATION.finditer(text):
@@ -734,6 +835,7 @@ def build_config(args):
         "profile": profile_name,
         "threshold": profile["threshold"],
         "min_words": profile["min_words"],
+        "short_allowance": profile["short_allowance"],
         "max_sentence_words": profile["max_sentence_words"],
         "max_paragraph_sentences": profile["max_paragraph_sentences"],
         "weights": dict(DEFAULT_WEIGHTS),
@@ -741,8 +843,8 @@ def build_config(args):
         "enabled": set(profile["enabled"]),
     }
 
-    for key in ("threshold", "min_words", "max_sentence_words",
-                "max_paragraph_sentences"):
+    for key in ("threshold", "min_words", "short_allowance",
+                "max_sentence_words", "max_paragraph_sentences"):
         if key in raw:
             cfg[key] = raw[key]
 
@@ -766,6 +868,8 @@ def build_config(args):
         cfg["threshold"] = args.threshold
     if args.min_words is not None:
         cfg["min_words"] = args.min_words
+    if args.short_allowance is not None:
+        cfg["short_allowance"] = args.short_allowance
     if args.max_sentence_words is not None:
         cfg["max_sentence_words"] = args.max_sentence_words
     if args.max_paragraph_sentences is not None:
@@ -831,6 +935,13 @@ def evaluate(path, text, cfg, kind, syntax):
     findings = run_checks(blocks, cfg)
     counts, weighted, rate = score(findings, words, cfg)
 
+    # Headings and table cells are fragments, so they are excluded here for the
+    # same reason the long_sentence check excludes them.
+    longest = max((word_count(sentence)
+                   for block in blocks for unit in block
+                   if unit.kind not in ("heading", "table")
+                   for sentence in sentences(unit.text)), default=0)
+
     reasons = []
     for name, cap in sorted(cfg["max"].items()):
         if cap is None or name not in cfg["enabled"]:
@@ -839,12 +950,19 @@ def evaluate(path, text, cfg, kind, syntax):
         if found > cap:
             reasons.append("%s: %d found, max %d" % (name, found, cap))
 
-    over_threshold = rate > cfg["threshold"]
-    if words < cfg["min_words"]:
-        # Rate-based scoring is noise on very short prose: a single violation in
-        # a 12-word comment reads as 8 per 100 words. Absolute caps still apply.
-        over_threshold = False
-    if over_threshold:
+    # Below min_words a rate is meaningless: at threshold 2.0 prose needs 50 words
+    # of runway per allowed violation, so one defect passes at 52 words and fails
+    # at 45. Short prose is judged on the absolute count instead, and its rate is
+    # not reported as a verdict at all. A null allowance disables the count rule
+    # and leaves only the per-check caps, which is what the comments profile wants.
+    short = words < cfg["min_words"]
+    allowance = cfg["short_allowance"]
+    found = len(findings)
+    if short:
+        if allowance is not None and found > allowance:
+            reasons.append("%d violation%s in %d words (short-doc rule: max %d)"
+                           % (found, "" if found == 1 else "s", words, allowance))
+    elif rate > cfg["threshold"]:
         reasons.append("score %.2f per 100 words, max %.2f" % (rate, cfg["threshold"]))
 
     return {
@@ -855,9 +973,51 @@ def evaluate(path, text, cfg, kind, syntax):
         "counts": counts,
         "weighted": weighted,
         "rate": rate,
+        "longest_sentence": longest,
+        "is_short": short,
+        "short_allowance": allowance,
         "reasons": reasons,
         "passed": not reasons,
     }
+
+
+def totals(results):
+    """Corpus rollup across every file linted in one run.
+
+    The corpus rate is recomputed from the pooled weight and word count, not
+    averaged from the per-file rates, so a long file counts for more than a
+    three-line one.
+    """
+    words = sum(result["words"] for result in results)
+    weighted = sum(result["weighted"] for result in results)
+    counts = {}
+    for result in results:
+        for name, found in result["counts"].items():
+            counts[name] = counts.get(name, 0) + found
+    return {
+        "files": len(results),
+        "failing": sum(1 for result in results if not result["passed"]),
+        "short_files": sum(1 for result in results if result["is_short"]),
+        "words": words,
+        "findings": sum(counts.values()),
+        "weighted": round(weighted, 2),
+        "rate": round(weighted * 100.0 / words, 2) if words else 0.0,
+        "longest_sentence": max((result["longest_sentence"]
+                                 for result in results), default=0),
+        "counts": dict(sorted(counts.items(), key=lambda kv: -kv[1])),
+    }
+
+
+def print_totals(total, cfg):
+    """Human-readable rollup. Goes to stderr, because stdout carries --json."""
+    short = ", %d short" % total["short_files"] if total["short_files"] else ""
+    err("prose-lint TOTAL  %d files, %d words, %d failing%s"
+        % (total["files"], total["words"], total["failing"], short))
+    err("  score %.2f per 100 words (max %.2f)  longest sentence %d words"
+        % (total["rate"], cfg["threshold"], total["longest_sentence"]))
+    for name, found in total["counts"].items():
+        share = found * 100.0 / max(total["findings"], 1)
+        err("  %-22s %5d  %5.1f%%" % (name, found, share))
 
 
 def err(message):
@@ -907,7 +1067,12 @@ def main():
     parser.add_argument("--threshold", type=float, default=None,
                         help="maximum weighted violations per 100 words")
     parser.add_argument("--min-words", type=int, default=None, dest="min_words",
-                        help="below this word count, only absolute caps apply")
+                        help="below this word count, judge on the absolute "
+                             "violation count instead of the rate")
+    parser.add_argument("--short-allowance", type=int, default=None,
+                        dest="short_allowance", metavar="N",
+                        help="violations tolerated below --min-words "
+                             "(default: 1 docs, 0 strict, none for comments)")
     parser.add_argument("--max-sentence-words", type=int, default=None,
                         dest="max_sentence_words")
     parser.add_argument("--max-paragraph-sentences", type=int, default=None,
@@ -928,6 +1093,8 @@ def main():
                         help="omit the quoted excerpt under each finding")
     parser.add_argument("--json", action="store_true", dest="as_json",
                         help="emit machine-readable results")
+    parser.add_argument("--total", action="store_true",
+                        help="add a corpus rollup: score, failing count, check shares")
     parser.add_argument("--list-checks", action="store_true",
                         help="print the checks with default weights and exit")
 
@@ -966,17 +1133,26 @@ def main():
         results.append(evaluate(path, text, cfg, kind, syntax))
 
     if args.as_json:
-        print(json.dumps([{
+        payload = [{
             "path": r["path"], "kind": r["kind"], "words": r["words"],
             "weighted": r["weighted"], "rate": r["rate"], "passed": r["passed"],
+            "longest_sentence": r["longest_sentence"],
+            "is_short": r["is_short"], "short_allowance": r["short_allowance"],
             "counts": r["counts"], "reasons": r["reasons"],
             "findings": [{"line": f.line, "check": f.check, "detail": f.detail,
                           "excerpt": f.excerpt} for f in r["findings"]],
-        } for r in results], indent=2))
+        } for r in results]
+        if args.total:
+            print(json.dumps({"files": payload, "total": totals(results)},
+                             indent=2))
+        else:
+            print(json.dumps(payload, indent=2))
     else:
         for result in results:
             if not result["passed"] or (args.warn_only and result["findings"]):
                 report(result, args.quiet)
+        if args.total:
+            print_totals(totals(results), cfg)
 
     failed = [r for r in results if not r["passed"]]
     if failed and args.warn_only:

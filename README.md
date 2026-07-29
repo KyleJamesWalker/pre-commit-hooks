@@ -171,12 +171,42 @@ Detection is heuristic, not a parser. It handles line and block comments, string
 literals with backslash escapes, and triple-quoted strings. It does not attempt
 nested block comments or interpolated expressions inside template strings.
 
-**Enforcement.** Every finding carries a weight. A file fails when either
-mechanism trips:
+The document profiles mirror the `technical-writing` skill's linter, which is the
+source of truth for the rule lists, the thresholds, the 100-word floor and the
+short-doc allowance. Two tools disagreeing about one document is its own problem,
+so every default here matches it. The `comments` profile has no counterpart in the
+skill and is documented on its own terms below.
 
-- **threshold** — weighted violations per 100 words. This puts long and short
-  prose on the same scale.
+**Enforcement.** Every finding carries a weight, and every check defaults to 1.0,
+so the score is a plain violation count per 100 words. Re-weight a check to make
+it advisory or to make it count double. A file fails when any mechanism trips:
+
+- **threshold** — weighted violations per 100 words, for prose at or above
+  `min_words`. This puts long and short prose on the same scale.
+- **short-doc rule** — below `min_words` a rate is meaningless, so the absolute
+  violation count applies instead. See below.
 - **max** — an absolute count for a check, for zero tolerance regardless of length.
+
+Below `min_words` a rate says more about length than about quality. At the default
+threshold of 2.0, prose gets 50 words of runway per allowed violation. One defect
+then passes at 52 words and fails at 45. A 50-word index page with two defects
+scores 4.00, which ranks it below a 2000-word document at 3.56.
+
+The short-doc rule counts violations against `short_allowance` instead, and
+reports no rate. The two mechanisms agree at the handover. Under `docs` defaults
+one violation passes at every length, and two violations fail below 100 words,
+where the rate itself starts to allow them.
+
+An allowance of 1 was chosen over the alternatives. Zero lets a single `don't`
+gate a commit. Two means nothing short can realistically fail, so the check stops
+catching anything. A denominator floor was rejected on purpose: it reports a rate
+that was never measured, and a reader seeing 1.0 on a 23-word file would infer
+0.23 violations.
+
+The `comments` profile sets `short_allowance` to `null`, which disables the rule
+and leaves only the per-check caps. A count rule on a terse comment would cap the
+banned-word list by the back door. The rate-based split below exists to prevent
+exactly that.
 
 The `comments` profile caps marketing words, hedges and empty closers at zero.
 One of those in a comment is worth flagging however short the comment is. The
@@ -187,19 +217,26 @@ absolute cap would fail normal code on its first commit.
 **Profiles** set the starting point. Configuration resolves in three layers:
 profile, then `--config`, then command-line flags.
 
-  | Profile | For | Checks | Threshold | Sentence cap |
-  |---|---|---|---|---|
-  | `docs` (default) | READMEs, design docs, guides | all 13 | 2.0 | 25 words |
-  | `strict` | runbooks, procedures, error text | all 13 | 0.5 | 20 words |
-  | `comments` | source-code comments | 4 high-signal | 2.0 | 30 words |
+  | Profile | For | Checks | Threshold | Sentence cap | Short doc |
+  |---|---|---|---|---|---|
+  | `docs` (default) | READMEs, design docs, guides | 12, no intensifier | 2.0 | 25 words | under 100 words, max 1 |
+  | `strict` | runbooks, procedures, error text | all 13 | 0.5 | 20 words | under 100 words, max 0 |
+  | `comments` | source-code comments | 4 high-signal | 2.0 | 30 words | rule disabled |
+
+`docs` leaves `intensifier` off, matching the skill: `significantly` and `highly`
+carry real meaning in a design doc, and the relaxed word list is what lets standard
+prose keep its range. `strict` turns it on.
 
 **Options**
   - `--profile <docs|strict|comments>` - rule preset. Default: `docs`.
   - `--config <config>` - JSON configuration, as a file path or an inline string.
   - `--threshold <number>` - maximum weighted violations per 100 words.
-  - `--min-words <n>` - below this word count only absolute caps apply, because a
-    rate is noise on very short prose. Defaults: 50 (`docs`), 30 (`strict`),
-    40 (`comments`).
+  - `--min-words <n>` - below this word count the short-doc rule applies instead
+    of the rate, because a rate is noise on very short prose. Defaults: 100
+    (`docs`), 100 (`strict`), 40 (`comments`).
+  - `--short-allowance <n>` - violations tolerated below `--min-words`. Defaults:
+    1 (`docs`), 0 (`strict`), disabled for `comments`. Set it to `null` in a JSON
+    config to disable the rule and leave only the per-check caps.
   - `--max-sentence-words <n>` / `--max-paragraph-sentences <n>` - length caps.
     Set the paragraph cap to `0` to disable it.
   - `--enable <check>` / `--disable <check>` - toggle one check. Repeatable.
@@ -213,6 +250,13 @@ profile, then `--config`, then command-line flags.
     with pre-commit's `verbose: true` so warnings show on a passing run.
   - `--quiet` - omit the quoted excerpt under each finding.
   - `--json` - machine-readable results, for reporting or a CI budget check.
+    Emits a list of one object per file.
+  - `--total` - add a corpus rollup across every file in the run: word count,
+    failing count, short-document count, pooled score, longest sentence and the
+    share each check contributes. The pooled score comes from the total weight over the total word
+    count, so a long file counts for more than a three-line one. Use it to tell
+    whether a corpus has a padding problem or a sentence-length problem. With
+    `--json` the top level becomes `{"files": [...], "total": {...}}`.
   - `--list-checks` - print every check with its default weight and profiles.
 
 **Checks**: `long_sentence`, `long_paragraph`, `semicolon`, `contraction`,
@@ -225,7 +269,8 @@ Run `--list-checks` for default weights.
 {
   "profile": "docs",
   "threshold": 2.0,
-  "min_words": 50,
+  "min_words": 100,
+  "short_allowance": 1,
   "max_sentence_words": 25,
   "max_paragraph_sentences": 6,
   "checks": {
@@ -242,9 +287,14 @@ Keys are optional. `checks` accepts `enabled`, `weight` and `max` per check.
 `allow` removes words from the defaults, `extra_banned` and `extra_marketing`
 add project-specific ones.
 
-**Suppression**. To exempt prose that must quote bad writing, use a marker in a
-comment. The single-line form covers the whole paragraph it appears in, because a
-sentence can wrap across several lines.
+**Suppression**. The linter skips inline code, so put a literal value copied from
+another system in backticks: `` `Won't Do` ``, `` `PENDING_REVIEW` ``. That is
+data, not your prose, and fencing it exempts it from every check while also being
+more accurate. Reach for a marker only when the prose itself has to break a rule.
+
+To exempt prose that must quote bad writing, use a marker in a comment. The
+single-line form covers the whole paragraph it appears in, because a sentence can
+wrap across several lines.
 
 ```markdown
 This paragraph quotes a bad example. <!-- prose-lint: ignore -->
