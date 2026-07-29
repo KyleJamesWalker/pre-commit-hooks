@@ -2,6 +2,42 @@
 
 This repository contains some pre-commit hooks for use with [pre-commit](https://pre-commit.com/).
 
+## Warn-only mode
+
+Hooks block by default. A hook that also supports `--warn-only` reports its
+findings and exits 0, so a repository can adopt a check on content it did not
+write before the backlog is clean.
+
+The convention for every hook here:
+
+- `--warn-only` downgrades **findings** to warnings and exits 0. A configuration
+  or usage error still fails, because a misconfigured hook is not a warning.
+- Warning output says `WARN`, never `FAIL`. A report that says both on one screen
+  leaves the reader guessing which half to believe.
+- Pair it with pre-commit's `verbose: true`. Pre-commit hides the output of a
+  passing hook, and a warn-only hook always passes, so without `verbose` the
+  warnings are never shown.
+
+Supported by `todo` / `regex` and by both `prose-lint` hooks. Pass the flag
+yourself:
+
+```yaml
+-   id: prose-lint
+    args: [--warn-only]
+    verbose: true
+```
+
+`prose-lint` also ships ready-made warn ids, `prose-lint-warn` and
+`prose-lint-comments-warn`, which set the flag and `verbose` for you.
+
+A useful pairing is to block on what a team controls and warn on the rest:
+
+```yaml
+-   id: prose-lint-comments        # blocks: comments are written here
+-   id: prose-lint-warn           # warns: inherited documentation
+    files: ^docs/
+```
+
 #### `todo` / 'regex'
 Ensures that TODO comments are removed, using the python re module to match lines.
   - `--search-pattern <pattern>` - Change the default grep pattern. The default looks for a
@@ -154,12 +190,19 @@ Lints prose against the machine-checkable subset of
 [ASD-STE100](https://asd-ste100.org) Simplified Technical English: word choice,
 sentence length, voice, hedging, marketing language and paragraph size.
 
-Language agnostic. Two hook ids share one script:
+Language agnostic. Four hook ids share one script:
 
 - `prose-lint` lints documentation files whole (`.md`, `.rst`, `.txt`, and more).
 - `prose-lint-comments` lints only the comments and docstrings in source files,
   across roughly 60 extensions. It never scores code, identifiers or string
   literals, so it skips a quoted `"// not a comment"` and a URL containing `#`.
+- `prose-lint-warn` and `prose-lint-comments-warn` run the same checks and report
+  without blocking. See [Warn-only mode](#warn-only-mode).
+
+Which to pick depends on how much prose the repository already carries. Measured
+across 17 repositories, a service or template repo has almost no documentation in
+a typical commit, so the blocking ids cost nothing. A documentation-heavy repo is
+the opposite case: start on the warn ids, clear the backlog, then switch.
 
 The hook picks comment syntax from the file extension: `#`, `//`, `/* */`, `--`,
 `;`, `%`, `<!-- -->`, `<# #>`, plus Python docstrings and Ruby `=begin` blocks.
