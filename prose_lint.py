@@ -1283,7 +1283,11 @@ class ConfigError(Exception):
     caller can tell a misconfigured hook from prose that failed the budget."""
 
 
-def report(result, quiet):
+def report(result, quiet, warn_only=False):
+    # Under --warn-only nothing is failing, so the per-file line says WARN. A
+    # report that prints "FAIL" and then "not blocking" contradicts itself on one
+    # screen, and a reader has to know which half to believe.
+    label = "WARN" if warn_only else "FAIL"
     for finding in result["findings"]:
         hint = FIX_HINT.get(finding.check, "")
         err("%s:%d: %s: %s%s" % (result["path"], finding.line, finding.check,
@@ -1291,7 +1295,7 @@ def report(result, quiet):
         if finding.excerpt and not quiet:
             err("    %s" % finding.excerpt)
     for reason in result["reasons"]:
-        err("%s: FAIL %s" % (result["path"], reason))
+        err("%s: %s %s" % (result["path"], label, reason))
 
 
 def classify(path, include_unknown):
@@ -1403,7 +1407,7 @@ def main():
     else:
         for result in results:
             if not result["passed"] or (args.warn_only and result["findings"]):
-                report(result, args.quiet)
+                report(result, args.quiet, args.warn_only)
         if args.total:
             print_totals(totals(results), cfg)
 

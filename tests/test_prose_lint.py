@@ -161,6 +161,49 @@ class ExitCodeTests(Harness):
         self.assertIn("utilize", err)
         self.assertIn("not blocking", err)
 
+    def test_warn_only_does_not_call_a_warning_a_failure(self):
+        """Printing FAIL and "not blocking" together contradicts itself."""
+        text = "# Title\n\nWe utilize and leverage and obtain this.\n"
+        path = self.write("warn.md", text)
+        _, _, err = self.run_lint("--warn-only", path)
+        self.assertIn(" WARN ", err)
+        self.assertNotIn(" FAIL ", err)
+        # The blocking run is the one that says FAIL.
+        _, _, blocking = self.run_lint(path)
+        self.assertIn(" FAIL ", blocking)
+        self.assertNotIn(" WARN ", blocking)
+
+    def test_warn_only_reports_findings_in_a_file_that_passes(self):
+        """A finding under budget is still worth surfacing in warn mode."""
+        text = "# Title\n\nWe utilize the approach.\n\n%s\n" % filler_words(110)
+        path = self.write("under.md", text)
+        self.assertEqual(self.run_lint(path)[0], 0)
+        code, _, err = self.run_lint("--warn-only", path)
+        self.assertEqual(code, 0)
+        self.assertIn("utilize", err)
+        # Nothing was over budget, so there is no summary line to print.
+        self.assertNotIn("not blocking", err)
+
+    def test_warn_only_does_not_downgrade_a_configuration_error(self):
+        """A misconfigured hook is not a warning, so it still exits 2."""
+        path = self.write("doc.md", "# Title\n\nWe utilize this.\n")
+        missing = os.path.join(tempfile.gettempdir(), "prose-lint-absent.md")
+        cases = [
+            ("--weight", "semicolon=bar", path),
+            ("--profile", "nope", path),
+            ("--warn-only", missing),
+        ]
+        for case in cases:
+            args = ("--warn-only",) + case if case[0] != "--warn-only" else case
+            self.assertEqual(self.run_lint(*args)[0], 2,
+                             "%s should still exit 2 under --warn-only" % (args,))
+
+    def test_warn_only_is_silent_on_clean_prose(self):
+        path = self.write("clean.md", "# Title\n\n%s\n" % filler_words(120))
+        code, _, err = self.run_lint("--warn-only", path)
+        self.assertEqual(code, 0)
+        self.assertEqual(err.strip(), "")
+
     def test_unknown_profile_exits_two(self):
         path = self.write("doc.md", "# Title\n")
         self.assertEqual(self.run_lint("--profile", "nope", path)[0], 2)
