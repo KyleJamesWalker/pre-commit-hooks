@@ -579,6 +579,94 @@ class DirectiveTests(Harness):
         self.assertFalse(result["passed"])
 
 
+class FragmentTests(Harness):
+    """Sentence-level rules need a sentence to apply to.
+
+    A semicolon rule says "write two sentences". In a table cell there is no room
+    for two, a heading is a fragment, and an unpunctuated list item is a label
+    joining items rather than clauses. 57% of semicolon findings measured across
+    17 repositories sat in one of those three.
+    """
+
+    def test_semicolon_in_a_table_cell_is_not_reported(self):
+        text = ("# Title\n\n| Name | Detail |\n|---|---|\n"
+                "| a | Tries OAuth first; falls back to JWT |\n")
+        path = self.write("table.md", text)
+        self.assertEqual(self.checks(path).get("semicolon", 0), 0)
+
+    def test_semicolon_in_a_label_list_item_is_not_reported(self):
+        text = "# Title\n\n- **Read-only:** kubectl get/describe; helm list/status\n"
+        path = self.write("label.md", text)
+        self.assertEqual(self.checks(path).get("semicolon", 0), 0)
+
+    def test_semicolon_in_a_punctuated_list_item_is_still_reported(self):
+        """A list item written as prose is prose, and the edit is available."""
+        text = "# Title\n\n- The parser reads the file; the writer stores it.\n"
+        path = self.write("proselist.md", text)
+        self.assertEqual(self.checks(path).get("semicolon", 0), 1)
+
+    def test_semicolon_joining_clauses_in_prose_is_still_reported(self):
+        text = "# Title\n\nThe parser reads the file; the writer stores the record.\n"
+        path = self.write("clauses.md", text)
+        self.assertEqual(self.checks(path).get("semicolon", 0), 1)
+
+    def test_tldr_is_one_token_not_two_clauses(self):
+        path = self.write("tldr.md", "# Title\n\nTL;DR the parser reads the file.\n")
+        self.assertEqual(self.checks(path).get("semicolon", 0), 0)
+
+
+class ParticipleTests(Harness):
+    """A participle can report a state instead of an action."""
+
+    def test_stative_participles_are_not_progressive_verbs(self):
+        text = ("# Title\n\nVerify the server is running. No other process is\n"
+                "using port 8000. The header is missing.\n")
+        path = self.write("state.md", text)
+        self.assertEqual(self.checks(path).get("ing_main_verb", 0), 0)
+
+    def test_a_real_progressive_is_still_reported(self):
+        path = self.write("prog.md", "# Title\n\nThe team is introducing a new field.\n")
+        self.assertEqual(self.checks(path).get("ing_main_verb", 0), 1)
+
+    def test_one_passive_is_charged_once(self):
+        """"is being drained" is one defect, not two."""
+        path = self.write("dbl.md", "# Title\n\nThe queue is being drained by the worker.\n")
+        counts = self.checks(path)
+        self.assertEqual(counts.get("passive_voice", 0), 1)
+        self.assertEqual(counts.get("ing_main_verb", 0), 0)
+
+    def test_predicate_adjectives_are_not_passives(self):
+        text = ("# Title\n\nThe flag is needed. The file is unused. The pattern is\n"
+                "unchanged. The token is expired. The route is unauthenticated.\n")
+        path = self.write("adj.md", text)
+        self.assertEqual(self.checks(path).get("passive_voice", 0), 0)
+
+    def test_a_real_passive_is_still_reported(self):
+        path = self.write("pass.md", "# Title\n\nThe record is written by the worker.\n")
+        self.assertEqual(self.checks(path).get("passive_voice", 0), 1)
+
+
+class NominalizationTests(Harness):
+    """A noun ending in -tion is not automatically a buried verb."""
+
+    def test_ordinary_noun_phrases_are_not_nominalizations(self):
+        text = ("# Title\n\nThe location of the bucket, the description of the\n"
+                "field, and the combination of the two.\n")
+        path = self.write("nouns.md", text)
+        self.assertEqual(self.checks(path).get("nominalization", 0), 0)
+
+    def test_buried_verbs_are_still_reported(self):
+        text = "# Title\n\nIt simplifies the detection of drift after the deprecation of v1.\n"
+        path = self.write("buried.md", text)
+        self.assertEqual(self.checks(path).get("nominalization", 0), 2)
+
+    def test_perform_needs_a_nominalized_object(self):
+        path = self.write("bare.md", "# Title\n\nClients that perform PKCE directly.\n")
+        self.assertEqual(self.checks(path).get("nominalization", 0), 0)
+        path = self.write("obj.md", "# Title\n\nIt performs an analysis of each record.\n")
+        self.assertEqual(self.checks(path).get("nominalization", 0), 1)
+
+
 class LineAttributionTests(Harness):
     """A finding names the line holding the text it quotes."""
 
@@ -698,16 +786,17 @@ utilize --seamless
 Overall, the service performs an analysis of each record. It doesn't retry.
 """
 
-    # Note what "is being drained" scores: ing_main_verb for "is being" and
-    # passive_voice for "being drained", so one passive costs two violations. That
-    # is current behaviour, pinned here deliberately rather than hidden, because a
-    # fix belongs in a commit that also updates this number.
+    # "is being drained" scores passive_voice once, for "being drained". It used
+    # to also score ing_main_verb for "is being", charging one passive twice.
+    #
+    # "the processing of records" scores nothing: `processing` does not end in a
+    # nominalising suffix. "performs an analysis of" scores once, because that
+    # one really does bury a verb.
     EXPECTED = {
         "banned_word": 4,
         "contraction": 1,
         "empty_closer": 1,
         "hedge": 1,
-        "ing_main_verb": 1,
         "marketing_adjective": 2,
         "nominalization": 1,
         "passive_voice": 4,

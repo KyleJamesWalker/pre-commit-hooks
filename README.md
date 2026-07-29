@@ -264,6 +264,23 @@ prose keep its range. `strict` turns it on.
 `banned_word`, `marketing_adjective`, `hedge`, `intensifier`, `empty_closer`.
 Run `--list-checks` for default weights.
 
+Four checks carry exemptions, because the rule they state is not the rule a
+reader wants applied everywhere:
+
+  - `semicolon` skips headings, table cells and list items without terminal
+    punctuation. Its fix is "write two sentences", and none of those three has
+    room for two. `TL;DR` is one token.
+  - `passive_voice` skips predicate adjectives such as `is needed` and
+    `is unchanged`, where naming an actor produces a worse sentence.
+  - `ing_main_verb` skips participles that report a state, such as
+    `is running` and `is missing`.
+  - `nominalization` skips concrete nouns that merely end in a nominalising
+    suffix, such as `the location of`, and requires `perform` and `conduct` to
+    carry a nominalised object.
+
+Use `--allow WORD` to drop a single word from the banned and marketing lists,
+and the JSON config to re-weight or disable a whole check.
+
 **JSON config format**
 ```json
 {

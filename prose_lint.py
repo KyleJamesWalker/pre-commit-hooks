@@ -126,6 +126,12 @@ CLOSER = [
 PASSIVE_OK = {
     "based", "related", "unrelated", "required", "intended", "supposed",
     "limited", "interested", "aware", "expected", "involved", "located",
+    # Predicate adjectives. "is needed" carries no more of a hidden actor than
+    # the "is required" directly above it, and telling an author to name one
+    # produces a worse sentence than the original.
+    "needed", "unused", "unchanged", "unaffected", "expired", "enabled",
+    "disabled", "named", "authenticated", "unauthenticated", "outdated",
+    "automated",
 }
 
 BE = r"(?:am|is|are|was|were|be|been|being)"
@@ -140,6 +146,19 @@ ING_NOUN = {
     "logging", "monitoring", "backing", "wiring", "casing", "sampling",
 }
 
+# Participles that report a state rather than an action in progress. "Verify the
+# server is running" and "no other process is using port 8000" are the correct
+# sentences; "use a simple tense" turns them into something that means less.
+#
+# `being` is here for a second reason. "is being drained" matched this check for
+# "is being" and passive_voice for "being drained", so one passive cost two
+# violations. The passive is the finding worth keeping.
+STATE_ING = {
+    "being", "missing", "running", "working", "failing", "passing",
+    "succeeding", "using", "listening", "waiting", "pending", "starting",
+    "stopping", "expecting",
+}
+
 # Contractions of "to be" or "to have" that end in 's. The possessive check has
 # to let these through, otherwise the most common contraction of all is invisible.
 S_CONTRACTIONS = {
@@ -151,12 +170,37 @@ PP_IRREG = (
     r"(?:done|made|sent|read|built|kept|held|set|put|run|written|shown|given"
     r"|taken|found|got|gotten|seen|known|thrown|drawn|left|lost|meant|sold)"
 )
+# `perform` and `conduct` are only nominalisations when they carry a nominalised
+# object: "performs an analysis of" hides "analyses". Bare "perform PKCE" is the
+# verb doing its job, and RFC 7636's own wording, so the determiner is required.
 NOMINALIZATION = re.compile(
-    r"\b(?:perform(?:s|ed)?|conduct(?:s|ed)?|carry out|carries out"
-    r"|make use of|makes use of|take (?:a look|action))\b",
+    r"\b(?:perform(?:s|ed)?|conduct(?:s|ed)?)\s+(?:an?|the)\s+\w+"
+    r"|\b(?:carry out|carries out|make use of|makes use of"
+    r"|take (?:a look|action))\b",
     re.I,
 )
 NOMINAL_OF = re.compile(r"\b(\w{4,}(?:tion|ment|ance|ence))\s+of\b", re.I)
+
+# Concrete nouns that merely end in a nominalising suffix. "The location of the
+# bucket" hides no verb: there is nothing to rewrite, and no shorter way to say
+# it. Without this list the suffix rule was wrong far more often than right --
+# 69 of 108 findings across 17 repositories were ordinary noun phrases.
+#
+# A word belongs here when the noun is the thing itself. Keep "detection",
+# "verification" and "deprecation" out of it: each really does bury a verb.
+NOMINAL_OK = {
+    "description", "location", "combination", "instance", "evidence",
+    "definition", "occurrence", "separation", "convenience", "reference",
+    "sequence", "difference", "presence", "absence", "audience", "experience",
+    "balance", "distance", "maintenance", "importance", "performance",
+    "appearance", "environment", "document", "argument", "element",
+    "component", "statement", "requirement", "increment", "segment", "moment",
+    "amount", "department", "permission", "extension", "dimension",
+    "condition", "position", "version", "section", "portion", "fraction",
+    "function", "connection", "collection", "option", "duration",
+    "information", "organization", "population", "proportion", "attention",
+    "relation", "percentage", "advancement",
+}
 
 FIX_HINT = {
     "long_sentence": "split into one idea per sentence",
@@ -833,6 +877,28 @@ SENT_SPLIT = re.compile(r"(?<=[.!?])" + _NOT_ABBREV + r"\s+(?=" + _SENT_LEAD + r
 WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9'\-/]*")
 
 
+# "TL;DR" is one token, not two clauses.
+SEMICOLON = re.compile(r"(?<!\bTL);")
+
+# Unit kinds that hold a fragment rather than a sentence. Sentence-level rules do
+# not apply to them, because the edit each rule asks for is not available.
+FRAGMENT_KINDS = ("heading", "table")
+
+
+def is_fragment(unit):
+    """True when a unit holds a fragment, so sentence-level rules do not apply.
+
+    A list item is prose when it is punctuated as prose. An unpunctuated one is a
+    label: `- Read-only: kubectl get; helm list` names two commands, and no
+    rewrite into two sentences exists.
+    """
+    if unit.kind in FRAGMENT_KINDS:
+        return True
+    if unit.kind == "list":
+        return not unit.text.rstrip().endswith((".", "!", "?"))
+    return False
+
+
 def sentences(text):
     return [p.strip() for p in SENT_SPLIT.split(text) if p.strip()]
 
@@ -907,8 +973,15 @@ def run_checks(blocks, cfg):
                             "%d words (max %d)" % (length, cfg["max_sentence_words"]),
                             sentence)
 
-            for match in re.finditer(r";", text):
-                add(unit, match.start(), "semicolon", "semicolon", text)
+            # A semicolon rule says "write two sentences", which is only an edit
+            # an author can make in prose. A table cell has no room for two
+            # sentences, a heading is a fragment, and a list item without
+            # terminal punctuation is a label joining items rather than clauses:
+            # "Read-only: kubectl get/describe; helm list/status". Measured over
+            # 17 repositories, 57% of semicolon findings sat in one of these.
+            if not is_fragment(unit):
+                for match in re.finditer(SEMICOLON, text):
+                    add(unit, match.start(), "semicolon", "semicolon", text)
 
             for match in re.finditer(r"\b\w+['’](?:t|re|ve|ll|d|s|m)\b", text):
                 word = match.group(0)
@@ -923,13 +996,16 @@ def run_checks(blocks, cfg):
                 add(unit, match.start(), "passive_voice", match.group(0), text)
 
             for match in re.finditer(r"\b%s\s+(\w+ing)\b" % BE, text, re.I):
-                if match.group(1).lower() in ING_NOUN:
-                    continue                            # a noun, not a verb
+                word = match.group(1).lower()
+                if word in ING_NOUN or word in STATE_ING:
+                    continue              # a noun or a state, not an action
                 add(unit, match.start(), "ing_main_verb", match.group(0), text)
 
             for match in NOMINALIZATION.finditer(text):
                 add(unit, match.start(), "nominalization", match.group(0), text)
             for match in NOMINAL_OF.finditer(text):
+                if match.group(1).lower() in NOMINAL_OK:
+                    continue                    # a thing, not a buried verb
                 add(unit, match.start(), "nominalization",
                     "%s of" % match.group(1), text)
 
