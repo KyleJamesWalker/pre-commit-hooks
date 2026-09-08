@@ -871,5 +871,185 @@ Overall, the service performs an analysis of each record. It doesn't retry.
         self.assertTrue(result["passed"])
 
 
+class CustomPatternTests(Harness):
+    """Project-defined regex checks, named and weighted like the built-ins."""
+
+    TICKET = r"(?<!TODO: )\b(?!CVE-)[A-Z]{2,4}-\d{1,5}\b"
+
+    def config(self, **spec):
+        spec.setdefault("pattern", self.TICKET)
+        return json.dumps({"profile": "comments",
+                           "custom": {"ticket_reference": spec}})
+
+    def test_a_pattern_becomes_a_named_check(self):
+        path = self.write("m.py", "# Extract the frames (PROJ-123).\n")
+        counts = self.checks("--config", self.config(), path)
+        self.assertEqual(counts.get("ticket_reference", 0), 1)
+
+    def test_matching_is_case_sensitive_unlike_the_word_lists(self):
+        """The point of a regex check: `[A-Z]` has to mean `[A-Z]`."""
+        path = self.write("m.py", "# lowercase proj-123 is not a ticket\n")
+        self.assertEqual(self.checks("--config", self.config(), path), {})
+
+    def test_ignore_case_is_available_when_wanted(self):
+        path = self.write("m.py", "# lowercase proj-123 is not a ticket\n")
+        counts = self.checks("--config", self.config(ignore_case=True), path)
+        self.assertEqual(counts.get("ticket_reference", 0), 1)
+
+    def test_a_pattern_defaults_to_zero_tolerance(self):
+        """A project writing a regex wants none of the thing, not a ration."""
+        path = self.write("m.py", "# Extract the frames (PROJ-123).\n")
+        result = self.evaluate("--config", self.config(), path)
+        self.assertFalse(result["passed"])
+        self.assertIn("ticket_reference: 1 found, max 0", result["reasons"])
+
+    def test_a_null_cap_puts_a_pattern_back_on_the_rate(self):
+        path = self.write("m.py", "# Extract the frames (PROJ-123).\n")
+        self.assertTrue(self.evaluate("--config", self.config(max=None), path)["passed"])
+
+    def test_weight_boosts_the_score_without_changing_the_count(self):
+        text = "# Extract the frames (PROJ-123).\n# %s\n" % filler_words(110)
+        path = self.write("m.py", text)
+        base = self.evaluate("--config", self.config(max=None), path)
+        heavy = self.evaluate("--config", self.config(max=None, weight=4.0), path)
+        self.assertEqual(base["counts"], heavy["counts"])
+        self.assertGreater(heavy["rate"], base["rate"])
+
+    def test_the_configured_message_reaches_the_report(self):
+        path = self.write("m.py", "# Extract the frames (PROJ-123).\n")
+        blob = self.config(message="put it in the commit body")
+        code, _, errs = self.run_lint("--config", blob, path)
+        self.assertEqual(code, 1)
+        self.assertIn("put it in the commit body", errs)
+
+    def test_the_message_is_carried_in_json(self):
+        path = self.write("m.py", "# Extract the frames (PROJ-123).\n")
+        blob = self.config(message="put it in the commit body")
+        findings = self.evaluate("--config", blob, path)["findings"]
+        self.assertEqual([f["message"] for f in findings],
+                         ["put it in the commit body"])
+
+    def test_disable_reaches_a_custom_check(self):
+        path = self.write("m.py", "# Extract the frames (PROJ-123).\n")
+        counts = self.checks("--config", self.config(),
+                             "--disable", "ticket_reference", path)
+        self.assertEqual(counts.get("ticket_reference", 0), 0)
+
+    def test_max_reaches_a_custom_check(self):
+        path = self.write("m.py", "# Extract the frames (PROJ-123).\n")
+        self.assertTrue(self.evaluate("--config", self.config(),
+                                      "--max", "ticket_reference=5",
+                                      path)["passed"])
+
+    def test_weight_flag_reaches_a_custom_check(self):
+        text = "# Extract the frames (PROJ-123).\n# %s\n" % filler_words(110)
+        path = self.write("m.py", text)
+        base = self.evaluate("--config", self.config(max=None), path)
+        heavy = self.evaluate("--config", self.config(max=None),
+                              "--weight", "ticket_reference=4", path)
+        self.assertGreater(heavy["rate"], base["rate"])
+
+    def test_enabled_false_defines_a_pattern_without_running_it(self):
+        path = self.write("m.py", "# Extract the frames (PROJ-123).\n")
+        counts = self.checks("--config", self.config(enabled=False), path)
+        self.assertEqual(counts.get("ticket_reference", 0), 0)
+
+    def test_list_checks_names_a_custom_check_and_its_pattern(self):
+        code, out, _ = self.run_lint("--config", self.config(), "--list-checks")
+        self.assertEqual(code, 0)
+        self.assertIn("ticket_reference", out)
+        self.assertIn(self.TICKET, out)
+
+    def test_the_cli_flag_defines_one_without_a_config_file(self):
+        path = self.write("m.py", "# Extract the frames (PROJ-123).\n")
+        counts = self.checks("--profile", "comments",
+                             "--pattern", "ticket_reference=" + self.TICKET, path)
+        self.assertEqual(counts.get("ticket_reference", 0), 1)
+
+    def test_a_pattern_never_reads_code_or_string_literals(self):
+        """The contract the whole tool rests on, extended to custom checks."""
+        path = self.write("m.py", 'ticket = "PROJ-999"  # nothing to see\n')
+        for flag in ("--pattern", "--pattern-raw"):
+            counts = self.checks("--profile", "comments",
+                                 flag, "t=" + self.TICKET, path)
+            self.assertEqual(counts, {}, flag)
+
+
+class RawPatternTests(Harness):
+    """`raw` sees the comment before tag stripping and inline-code masking."""
+
+    TICKET = r"(?<!TODO: )\b[A-Z]{2,4}-\d{1,5}\b"
+    SOURCE = ("# Extract the frames (PROJ-123).\n"
+              "# TODO: PROJ-456 handle galleries\n")
+
+    def test_a_leading_todo_tag_is_stripped_from_the_extracted_prose(self):
+        """Why `raw` exists. The extractor treats `TODO:` as a tag and drops it,
+        so a lookbehind guarding on it cannot fire on the extracted text."""
+        path = self.write("m.py", self.SOURCE)
+        lines = self.lines_for("t", "--profile", "comments",
+                               "--pattern", "t=" + self.TICKET, path)
+        self.assertEqual(lines, [1, 2])
+
+    def test_raw_keeps_the_tag_so_the_guard_survives(self):
+        path = self.write("m.py", self.SOURCE)
+        lines = self.lines_for("t", "--profile", "comments",
+                               "--pattern-raw", "t=" + self.TICKET, path)
+        self.assertEqual(lines, [1])
+
+    def test_raw_reports_the_line_holding_the_match(self):
+        path = self.write("m.py", "# one\n# two\n# see PROJ-777 for the rule\n")
+        lines = self.lines_for("t", "--profile", "comments",
+                               "--pattern-raw", "t=" + self.TICKET, path)
+        self.assertEqual(lines, [3])
+
+    def test_raw_sees_a_backticked_value_that_masking_would_hide(self):
+        path = self.write("m.py", "# tracked in `PROJ-321` upstream\n")
+        args = ["--profile", "comments", path]
+        self.assertEqual(self.checks("--pattern", "t=" + self.TICKET, *args), {})
+        counts = self.checks("--pattern-raw", "t=" + self.TICKET, *args)
+        self.assertEqual(counts.get("t", 0), 1)
+
+    def test_raw_works_on_the_document_path(self):
+        path = self.write("doc.md", "# Title\n\nTrack the rest in PROJ-321.\n")
+        counts = self.checks("--pattern-raw", "t=" + self.TICKET, path)
+        self.assertEqual(counts.get("t", 0), 1)
+
+    def test_raw_honours_an_ignore_marker(self):
+        path = self.write("m.py", "# quoting PROJ-123  # prose-lint: ignore\n")
+        counts = self.checks("--profile", "comments",
+                             "--pattern-raw", "t=" + self.TICKET, path)
+        self.assertEqual(counts.get("t", 0), 0)
+
+
+class CustomPatternErrorTests(Harness):
+    """A bad pattern is a configuration error, so exit 2, never 1."""
+
+    def bad(self, *args):
+        path = self.write("m.py", "# a comment\n")
+        code, _, errs = self.run_lint(*(list(args) + [path]))
+        self.assertEqual(code, 2, errs)
+        return errs
+
+    def test_a_pattern_that_does_not_compile(self):
+        self.assertIn("does not compile", self.bad("--pattern", "bad=[unclosed"))
+
+    def test_a_name_that_shadows_a_built_in(self):
+        self.assertIn("shadows a built-in", self.bad("--pattern", "hedge=foo"))
+
+    def test_a_name_the_tuning_flags_could_not_address(self):
+        self.assertIn("must match", self.bad("--pattern", "Ticket-Ref=foo"))
+
+    def test_a_missing_pattern(self):
+        self.assertIn("needs a", self.bad(
+            "--config", '{"custom": {"ticket_reference": {"message": "x"}}}'))
+
+    def test_a_message_for_a_pattern_that_was_never_defined(self):
+        self.assertIn("unknown pattern",
+                      self.bad("--pattern-message", "nope=hi"))
+
+    def test_a_malformed_flag(self):
+        self.assertIn("expects NAME=REGEX", self.bad("--pattern", "noequals"))
+
+
 if __name__ == "__main__":
     unittest.main()
