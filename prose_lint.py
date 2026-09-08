@@ -246,6 +246,38 @@ HIGH_SIGNAL = ["banned_word", "marketing_adjective", "hedge", "empty_closer"]
 # and the relaxed word list is what lets standard prose keep its range.
 DOC_CHECKS = [name for name in ALL_CHECKS if name != "intensifier"]
 
+# A custom check is named like a built-in one, so --weight, --max, --enable and
+# --disable reach it and --list-checks can print it.
+CUSTOM_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+class CustomCheck(object):
+    """A project-defined regex rule.
+
+    Two defaults differ from the built-in checks deliberately. Matching is
+    case-sensitive, because the word lists match a lowercased copy of the text
+    and a pattern such as `[A-Z]{2,4}-\\d+` says nothing against one. The cap is
+    0, because a project writing a regex is naming something it wants none of.
+
+    `raw` matches the source line instead of the extracted prose. A leading
+    `TODO:` is a documentation tag, so the extractor strips it: a pattern
+    guarding on one only works against the raw line.
+    """
+
+    def __init__(self, name, pattern, message="", ignore_case=False,
+                 weight=1.0, cap=0, enabled=True, raw=False):
+        self.name = name
+        self.message = message
+        self.weight = weight
+        self.cap = cap
+        self.enabled = enabled
+        self.raw = raw
+        try:
+            self.regex = re.compile(pattern, re.I if ignore_case else 0)
+        except re.error as exc:
+            raise ConfigError("pattern for check %r does not compile (%s)"
+                              % (name, exc))
+
 # --------------------------------------------------------------------------- #
 # Why `short_allowance` exists, and why it is 1
 #
@@ -432,11 +464,15 @@ class Segment(object):
     appending to `text` directly.
     """
 
-    def __init__(self, line, text, kind="prose", parts=None):
+    def __init__(self, line, text, kind="prose", parts=None, raw_parts=None):
         self.line = line
         self.text = text
         self.kind = kind
         self.parts = list(parts) if parts else [(line, text)]
+        # The same lines before tag stripping and inline-code masking, for a
+        # `raw` custom check. None on the document path, where the source line
+        # is the prose and carries no code to exclude.
+        self.raw_parts = list(raw_parts) if raw_parts else None
 
     def extend(self, line, text):
         """Append a wrapped continuation line, keeping the offset map intact."""
@@ -846,14 +882,17 @@ def extract_comment_blocks(text, syntax):
             parts = [(line, part.strip()) for line, part in parts]
         # Masking runs per line here, as it already does on the document path, so
         # that a finding's offset still resolves through Segment.line_of.
+        kept = [(line, part) for line, part in parts if line not in ignored]
         parts = [(line, mask_inline(strip_directive(part)).strip())
-                 for line, part in parts if line not in ignored]
+                 for line, part in kept]
         parts = [(line, part) for line, part in parts if part]
         if not parts:
             continue
         joined = " ".join(part for _, part in parts)
         if joined.strip():
-            units.append(Segment(parts[0][0], joined, "comment", parts))
+            units.append(Segment(parts[0][0], joined, "comment", parts,
+                                 raw_parts=[(line, part) for line, part in kept
+                                            if part]))
     return [[unit] for unit in units]
 
 # --------------------------------------------------------------------------- #
@@ -941,7 +980,7 @@ class Finding(object):
         self.excerpt = excerpt_text
 
 
-def run_checks(blocks, cfg):
+def run_checks(blocks, cfg, raw_lines=None):
     """Apply every enabled check. Returns a list of Findings."""
     out = []
     enabled = cfg["enabled"]
@@ -1029,6 +1068,15 @@ def run_checks(blocks, cfg):
             for phrase, _, at in find_phrases(text, CLOSER):
                 add(unit, at, "empty_closer", '"%s"' % phrase, text)
 
+            # Matched against the unit text rather than the lowercased copy the
+            # word lists use, so a pattern can be case-sensitive.
+            for check in cfg["custom"]:
+                if check.raw:
+                    continue
+                for match in check.regex.finditer(text):
+                    add(unit, match.start(), check.name,
+                        '"%s"' % match.group(0), text)
+
         cap = cfg["max_paragraph_sentences"]
         if cap and sentence_total > cap and not any(
                 u.kind in ("list", "heading", "table") for u in block):
@@ -1036,6 +1084,17 @@ def run_checks(blocks, cfg):
             # the block's first line rather than on any one offset inside it.
             add(block[0], 0, "long_paragraph",
                 "%d sentences (max %d)" % (sentence_total, cap), block[0].text)
+
+    # A raw pattern reads the source line, so it still sees the tags and the
+    # inline code that extraction removes. Only lines that reached a unit are
+    # scanned, which keeps code and suppressed lines out of every check.
+    for line, source in raw_lines or ():
+        for check in cfg["custom"]:
+            if not check.raw or check.name not in enabled:
+                continue
+            for match in check.regex.finditer(source):
+                out.append(Finding(line, check.name,
+                                   '"%s"' % match.group(0), excerpt(source)))
 
     out.sort(key=lambda f: (f.line, f.check))
     return out
@@ -1058,6 +1117,34 @@ def _number(cast, value, what):
     except (TypeError, ValueError):
         expected = "an integer" if cast is int else "a number"
         raise ConfigError("%s expects %s, got %r" % (what, expected, value))
+
+
+def _custom_check(name, spec):
+    """Build one CustomCheck from a config entry or a --pattern flag."""
+    if not CUSTOM_NAME.match(name or ""):
+        raise ConfigError("custom check name %r must match [a-z][a-z0-9_]*, so "
+                         "that --weight and --max can address it" % name)
+    if name in ALL_CHECKS:
+        raise ConfigError("custom check %r shadows a built-in check" % name)
+    if isinstance(spec, str):
+        spec = {"pattern": spec}
+    if not isinstance(spec, dict):
+        raise ConfigError("custom check %r must be a regex string or an object"
+                         % name)
+    if not spec.get("pattern"):
+        raise ConfigError('custom check %r needs a "pattern"' % name)
+    cap = spec.get("max", 0)
+    return CustomCheck(
+        name, spec["pattern"],
+        message=spec.get("message", ""),
+        ignore_case=bool(spec.get("ignore_case")),
+        weight=_number(float, spec.get("weight", 1.0),
+                       "weight for check %r" % name),
+        cap=(None if cap is None else
+             _number(int, cap, "max for check %r" % name)),
+        enabled=spec.get("enabled", True) is not False,
+        raw=bool(spec.get("raw")),
+    )
 
 
 def build_config(args):
@@ -1099,10 +1186,37 @@ def build_config(args):
         if key in raw:
             cfg[key] = raw[key]
 
+    # Custom checks resolve first, so the tuning loops below accept their names.
+    custom = {}
+    for name, spec in sorted((raw.get("custom") or {}).items()):
+        custom[name] = _custom_check(name, spec)
+    for flag, items in (("--pattern", args.pattern),
+                        ("--pattern-raw", args.pattern_raw)):
+        for item in items or []:
+            name, _, pattern = item.partition("=")
+            if not name or not pattern:
+                raise ConfigError("%s expects NAME=REGEX, got %r" % (flag, item))
+            custom[name] = _custom_check(
+                name, {"pattern": pattern, "raw": flag == "--pattern-raw"})
+    for item in args.pattern_message or []:
+        name, _, text = item.partition("=")
+        if name not in custom:
+            raise ConfigError("--pattern-message names unknown pattern %r "
+                             "(define it with --pattern or a config)" % name)
+        custom[name].message = text
+    for name in sorted(custom):
+        check = custom[name]
+        cfg["weights"][name] = check.weight
+        cfg["max"][name] = check.cap
+        if check.enabled:
+            cfg["enabled"].add(name)
+
+    known = list(ALL_CHECKS) + sorted(custom)
+
     for name, spec in (raw.get("checks") or {}).items():
-        if name not in ALL_CHECKS:
+        if name not in known:
             raise ConfigError("unknown check %r in config (choose from %s)"
-                             % (name, ", ".join(ALL_CHECKS)))
+                             % (name, ", ".join(known)))
         if not isinstance(spec, dict):
             raise ConfigError("config for check %r must be an object" % name)
         if spec.get("enabled") is True:
@@ -1129,21 +1243,21 @@ def build_config(args):
         cfg["max_paragraph_sentences"] = args.max_paragraph_sentences
 
     for name in args.enable or []:
-        if name not in ALL_CHECKS:
+        if name not in known:
             raise ConfigError("unknown check %r" % name)
         cfg["enabled"].add(name)
     for name in args.disable or []:
-        if name not in ALL_CHECKS:
+        if name not in known:
             raise ConfigError("unknown check %r" % name)
         cfg["enabled"].discard(name)
     for item in args.weight or []:
         name, _, value = item.partition("=")
-        if name not in ALL_CHECKS or not value:
+        if name not in known or not value:
             raise ConfigError("--weight expects CHECK=NUMBER, got %r" % item)
         cfg["weights"][name] = _number(float, value, "--weight %s" % name)
     for item in args.max or []:
         name, _, value = item.partition("=")
-        if name not in ALL_CHECKS or not value:
+        if name not in known or not value:
             raise ConfigError("--max expects CHECK=INTEGER, got %r" % item)
         cfg["max"][name] = _number(int, value, "--max %s" % name)
 
@@ -1160,11 +1274,31 @@ def build_config(args):
     cfg["banned"] = banned
     cfg["marketing"] = marketing
     cfg["allow"] = allow
+    cfg["custom"] = [custom[name] for name in sorted(custom)]
+    cfg["messages"] = dict((name, custom[name].message) for name in custom)
     return cfg
 
 # --------------------------------------------------------------------------- #
 # Scoring and reporting
 # --------------------------------------------------------------------------- #
+
+
+def source_lines(text, blocks):
+    """(line, source) for every source line that reached a unit, in order."""
+    source = text.split("\n")
+    seen, out = set(), []
+    for block in blocks:
+        for unit in block:
+            pairs = unit.raw_parts
+            if pairs is None:
+                pairs = [(line, source[line - 1]) for line, _ in unit.parts
+                         if 0 < line <= len(source)]
+            for line, raw in pairs:
+                if line in seen:
+                    continue
+                seen.add(line)
+                out.append((line, raw))
+    return sorted(out)
 
 
 def score(findings, words, cfg):
@@ -1185,7 +1319,8 @@ def evaluate(path, text, cfg, kind, syntax):
         blocks = extract_comment_blocks(text, syntax)
 
     words = sum(word_count(unit.text) for block in blocks for unit in block)
-    findings = run_checks(blocks, cfg)
+    findings = run_checks(blocks, cfg, source_lines(text, blocks)
+                          if any(c.raw for c in cfg["custom"]) else None)
     counts, weighted, rate = score(findings, words, cfg)
 
     # Headings and table cells are fragments, so they are excluded here for the
@@ -1283,13 +1418,13 @@ class ConfigError(Exception):
     caller can tell a misconfigured hook from prose that failed the budget."""
 
 
-def report(result, quiet, warn_only=False):
+def report(result, quiet, warn_only=False, messages=None):
     # Under --warn-only nothing is failing, so the per-file line says WARN. A
     # report that prints "FAIL" and then "not blocking" contradicts itself on one
     # screen, and a reader has to know which half to believe.
     label = "WARN" if warn_only else "FAIL"
     for finding in result["findings"]:
-        hint = FIX_HINT.get(finding.check, "")
+        hint = FIX_HINT.get(finding.check) or (messages or {}).get(finding.check, "")
         err("%s:%d: %s: %s%s" % (result["path"], finding.line, finding.check,
                                  finding.detail, " (%s)" % hint if hint else ""))
         if finding.excerpt and not quiet:
@@ -1340,6 +1475,16 @@ def main():
     parser.add_argument("--max", action="append", metavar="CHECK=INTEGER")
     parser.add_argument("--allow", action="append", metavar="WORD",
                         help="drop a word from the banned and marketing lists")
+    parser.add_argument("--pattern", action="append", metavar="NAME=REGEX",
+                        help="add a project regex check, case-sensitive and "
+                             "capped at zero. Repeatable")
+    parser.add_argument("--pattern-raw", action="append", metavar="NAME=REGEX",
+                        dest="pattern_raw",
+                        help="as --pattern, but matched against the source line "
+                             "before tag stripping and inline-code masking")
+    parser.add_argument("--pattern-message", action="append",
+                        dest="pattern_message", metavar="NAME=TEXT",
+                        help="text to surface when NAME matches")
     parser.add_argument("--exclude", action="append", metavar="GLOB",
                         help="skip paths matching this glob")
     parser.add_argument("--include-unknown", action="store_true",
@@ -1361,19 +1506,22 @@ def main():
 
     args = parser.parse_args()
 
+    try:
+        cfg = build_config(args)
+    except ConfigError as exc:
+        err("prose-lint: %s" % exc)
+        return 2
+
     if args.list_checks:
         print("%-22s %-8s %s" % ("check", "weight", "profiles"))
         for name in ALL_CHECKS:
             profiles = ",".join(sorted(key for key, value in PROFILES.items()
                                        if name in value["enabled"]))
             print("%-22s %-8.1f %s" % (name, DEFAULT_WEIGHTS[name], profiles))
+        for check in cfg["custom"]:
+            print("%-22s %-8.1f %s" % (check.name, check.weight,
+                                       "custom: %s" % check.regex.pattern))
         return 0
-
-    try:
-        cfg = build_config(args)
-    except ConfigError as exc:
-        err("prose-lint: %s" % exc)
-        return 2
     results = []
     for path in args.filenames:
         if any(fnmatch.fnmatch(path, pattern) for pattern in args.exclude or []):
@@ -1397,7 +1545,9 @@ def main():
             "is_short": r["is_short"], "short_allowance": r["short_allowance"],
             "counts": r["counts"], "reasons": r["reasons"],
             "findings": [{"line": f.line, "check": f.check, "detail": f.detail,
-                          "excerpt": f.excerpt} for f in r["findings"]],
+                          "excerpt": f.excerpt,
+                          "message": cfg["messages"].get(f.check, "")}
+                         for f in r["findings"]],
         } for r in results]
         if args.total:
             print(json.dumps({"files": payload, "total": totals(results)},
@@ -1407,7 +1557,7 @@ def main():
     else:
         for result in results:
             if not result["passed"] or (args.warn_only and result["findings"]):
-                report(result, args.quiet, args.warn_only)
+                report(result, args.quiet, args.warn_only, cfg["messages"])
         if args.total:
             print_totals(totals(results), cfg)
 

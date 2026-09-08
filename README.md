@@ -287,6 +287,11 @@ prose keep its range. `strict` turns it on.
   - `--max <check>=<integer>` - absolute cap for one check. Repeatable.
   - `--allow <word>` - drop a word from the banned and marketing lists, for a
     project where it is a domain term. Repeatable.
+  - `--pattern <name>=<regex>` - add a project regex check. Repeatable.
+  - `--pattern-raw <name>=<regex>` - the same, matched against the source line
+    before tag stripping and inline-code masking. Repeatable.
+  - `--pattern-message <name>=<text>` - the text to surface when that pattern
+    matches. Repeatable.
   - `--exclude <glob>` - skip matching paths. Repeatable.
   - `--include-unknown` - treat extensionless files as documentation.
   - `--warn-only` - report findings and exit 0, matching the `todo` hook. Pair
@@ -324,6 +329,85 @@ reader wants applied everywhere:
 Use `--allow WORD` to drop a single word from the banned and marketing lists,
 and the JSON config to re-weight or disable a whole check.
 
+**Custom pattern checks**
+
+The built-in checks cover word choice and sentence shape. A project rule that is
+neither, such as "no ticket numbers in comments", needs a regex. Declare one under
+`custom` and it becomes a check with its own name, so `--weight`, `--max`,
+`--enable`, `--disable` and `--list-checks` all reach it.
+
+```json
+{
+  "profile": "comments",
+  "custom": {
+    "ticket_reference": {
+      "pattern": "(?<!TODO: )\\b(?!CVE-)[A-Z]{2,4}-\\d{1,5}\\b",
+      "message": "ticket refs belong in the commit body; write `TODO: PROJ-123` if the code must carry one",
+      "raw": true,
+      "weight": 2.0
+    }
+  }
+}
+```
+
+```
+src/frames.py:1: ticket_reference: "PROJ-123" (ticket refs belong in the commit
+    body; write `TODO: PROJ-123` if the code must carry one)
+src/frames.py: FAIL ticket_reference: 1 found, max 0
+```
+
+Per-pattern keys, all optional but `pattern`:
+
+  | Key | Default | Meaning |
+  |---|---|---|
+  | `pattern` | required | Python regex. A bare string in place of the object is read as this |
+  | `message` | none | Text shown after the finding, where a built-in prints its fix hint |
+  | `raw` | `false` | Match the source line rather than the extracted prose |
+  | `ignore_case` | `false` | Compile with `re.I` |
+  | `weight` | `1.0` | Contribution to the score |
+  | `max` | `0` | Absolute cap. `null` puts the check back on the rate |
+  | `enabled` | `true` | Define a pattern without running it |
+
+Two defaults differ from the built-in checks, because a regex is a different kind
+of rule from a word list:
+
+- **Case-sensitive.** The word lists match a lowercased copy of the text, so
+  `[A-Z]{2,4}` would be meaningless there. A custom pattern sees the original
+  case. This is why `extra_banned` cannot express these rules: its entries are
+  literal, `re.escape`d and matched case-insensitively.
+- **Capped at zero.** A project writing a regex is naming something it wants none
+  of, not something it wants rationed. Set `"max": null` for a rate-based rule.
+
+**`raw` and why it exists.** By default a pattern matches the prose the linter
+extracted, which has had documentation tags (`TODO:`, `@param`, `Note:`) and
+inline code removed. So a guard such as `(?<!TODO: )` cannot fire on a comment
+that *starts* with the tag, because the tag is already gone by then:
+
+```python
+# TODO: PROJ-456 handle galleries     # extracted as "PROJ-456 handle galleries"
+```
+
+`"raw": true` matches the comment before that normalisation, so the guard
+survives. Raw patterns still read comment and documentation prose only. Code,
+identifiers and string literals are never scanned, and a `prose-lint: ignore`
+marker still applies.
+
+Custom checks are also how to express a rule about something that must be
+*present*. A `TODO` with no ticket:
+
+```yaml
+-   id: prose-lint-comments
+    args:
+    -   --pattern-raw
+    -   'untracked_todo=TODO(?!: [A-Z]{2,4}-\d)'
+    -   --pattern-message
+    -   'untracked_todo=give the TODO a ticket'
+```
+
+For that rule specifically the `todo` hook in this repository is the older and
+simpler option. Reach for a custom pattern when the rule has to live beside the
+prose checks and share their reporting.
+
 **JSON config format**
 ```json
 {
@@ -339,13 +423,20 @@ and the JSON config to re-weight or disable a whole check.
   },
   "allow": ["ensure"],
   "extra_banned": {"k8s": "Kubernetes"},
-  "extra_marketing": ["synergy"]
+  "extra_marketing": ["synergy"],
+  "custom": {
+    "ticket_reference": {
+      "pattern": "(?<!TODO: )\\b[A-Z]{2,4}-\\d{1,5}\\b",
+      "message": "ticket refs belong in the commit body",
+      "raw": true
+    }
+  }
 }
 ```
 
 Keys are optional. `checks` accepts `enabled`, `weight` and `max` per check.
 `allow` removes words from the defaults, `extra_banned` and `extra_marketing`
-add project-specific ones.
+add project-specific ones. `custom` defines regex checks, documented above.
 
 **Suppression**. The linter skips inline code, so put a literal value copied from
 another system in backticks: `` `Won't Do` ``, `` `PENDING_REVIEW` ``. That is
@@ -393,6 +484,15 @@ Examples:
     ```yaml
     -   id: prose-lint
         args: [--config, .prose-lint.json]
+    ```
+  - A project rule the built-in checks do not cover:
+    ```yaml
+    -   id: prose-lint-comments
+        args:
+        -   --pattern-raw
+        -   'ticket_reference=(?<!TODO: )\b(?!CVE-)[A-Z]{2,4}-\d{1,5}\b'
+        -   --pattern-message
+        -   'ticket_reference=put the ticket in the commit body'
     ```
 
 # Development
